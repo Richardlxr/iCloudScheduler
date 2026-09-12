@@ -147,11 +147,17 @@ final class AppModel: ObservableObject {
         persistDraft()
     }
     var reviewHeight: CGFloat {
-        let cardHeight = drafts.reduce(CGFloat(0)) { height, draft in
-            height + 150 + CGFloat(DraftValidator.reviewNotes(draft).joined().count / 46 + (DraftValidator.reviewNotes(draft).isEmpty ? 0 : 1)) * 20
-                + CGFloat(draft.conflicts.isEmpty ? 0 : 52) + CGFloat(DraftValidator.errorsAfterReview(draft).isEmpty ? 0 : 45)
+        var height: CGFloat = 170
+        for draft in drafts {
+            let notes = DraftValidator.reviewNotes(draft)
+            let lines = notes.joined().count / 46 + (notes.isEmpty ? 0 : 1)
+            height += 150 + CGFloat(lines) * 20
+            if !draft.conflicts.isEmpty { height += 52 }
+            if !DraftValidator.errorsAfterReview(draft).isEmpty { height += 45 }
         }
-        return min(660, max(320, 170 + cardHeight + (editingID == nil ? 0 : 330) + CGFloat(questions.isEmpty ? 0 : 50)))
+        if editingID != nil { height += 330 }
+        if !questions.isEmpty { height += 50 }
+        return min(660, max(320, height))
     }
     func inputChanged() {
         generation?.cancel(); revision = UUID(); isGenerating = false; drafts = []; questions = []; isDemo = false
