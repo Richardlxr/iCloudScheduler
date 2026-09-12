@@ -15,7 +15,7 @@
 
 ## 下载与安装
 
-前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.2.0-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
+前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.2.1-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
 
 当前下载包使用 ad-hoc 签名，尚未通过 Apple Developer ID 签名与公证，macOS 可能阻止首次打开；更新后可能需要重新授权日历和钥匙串。也可按下面的步骤从源码构建；一个 Universal 安装包同时包含 arm64 与 x86_64 两种架构。
 
@@ -36,7 +36,7 @@ open dist/iCloudScheduler.app
 
 更新清单与安装包均验证 Ed25519 签名，验证通过后才解包。生成日程、写入日历或测试模型时暂缓重启；未完成的附件、编辑以及关闭草稿保留时的输入需先处理，其他可恢复草稿会在重启前保存。更新检查连接 GitHub，不发送日程、附件或 API Key，也不启用系统画像上报。
 
-**0.1.x 需手动安装一次 0.2.0，之后的版本可在 App 内更新。** 更新不会替你绕过 macOS 的日历、钥匙串或首次启动权限。发布流程见 [更新维护说明](docs/updating.md)。
+**0.1.x 需手动安装一次当前版本；0.2.0 及以上可在 App 内更新。** 更新不会替你绕过 macOS 的日历、钥匙串或首次启动权限。发布流程见 [更新维护说明](docs/updating.md)。
 
 ## 使用
 
@@ -45,7 +45,7 @@ open dist/iCloudScheduler.app
 3. 在日历设置允许访问，明确选中 `iCloud / 你的日历`，保存默认日历和提前提醒。
 4. 输入安排，按提交快捷键生成。默认检查草稿后添加，也可在“日历与提醒”关闭“添加前确认”，让信息完整的日程自动添加。
 
-确认窗口直接显示具体假设和时间冲突。存在冲突时，底部固定显示 **“删除 / 仍然添加”**；“仍然添加”一次完成确认并写入，全部成功后窗口自动收起，记录可在“近期记录”查看；删除仅移除选中的待添加草稿，完成后同样收起窗口；未选中的草稿保留。真正缺少时间时，“补全后添加”直接打开编辑，不再留下无法点击的灰色按钮。
+确认窗口直接显示具体假设和时间冲突。存在冲突时，底部固定显示 **“删除 / 仍然添加”**；“仍然添加”一次完成确认并写入，全部成功后窗口自动收起，记录可在“近期记录”查看；删除仅移除选中的待添加草稿，完成后同样收起窗口。当前输入中的日程全部添加或删除后，会清空原文、附件和草稿，再次呼出直接开始新输入；未选中、尚未处理的草稿保留，失败或结果不确定时仍显示待处理内容。真正缺少时间时，“补全后添加”直接打开编辑，不再留下无法点击的灰色按钮。
 
 模型只返回固定字段的 JSON；没有年份的月日按当前年或下一年展开，缺结束时间默认 60 分钟，缺地点留空。默认规则不作为阻塞假设，非必要信息不触发追问；真正缺少具体时刻时仍需补全。
 
@@ -67,7 +67,7 @@ swift run SchedulerChecks
 
 已实现输入、设置、模型请求、日程编辑、指定日历写入、冲突提示、操作记录、恢复核对和有条件撤销。自动找空档、重复规则、DOCX/ICS、上游原生 PDF 上传和流式响应尚未实现。模型失败不自动重试，日历保存成功不代表其他设备已经完成同步。
 
-自动化验收使用合成模型和日历，共 139 项离线检查通过；这些检查不代表六家真实推理、跨设备同步或系统提醒已全部验收。详见 [开发与验证说明](docs/development.md)及 [v0.2.0 更新流程核验](docs/research/release-v0.2.0-validation.md)。
+自动化验收使用合成模型和日历，共 151 项离线检查通过；这些检查不代表六家真实推理、跨设备同步或系统提醒已全部验收。详见 [开发与验证说明](docs/development.md)、[v0.2.1 输入清理核验](docs/research/release-v0.2.1-validation.md)及 [v0.2.0 更新流程核验](docs/research/release-v0.2.0-validation.md)。
 
 窗口记忆、可选提交快捷键、后台处理和自定义全天提醒的后续验证见 [后台流程验收记录](docs/research/background-validation.md)。
 

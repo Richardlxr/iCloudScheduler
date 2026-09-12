@@ -93,9 +93,9 @@ enum WorkflowChecks {
             await Task.yield()
             switch scenario {
             case "confirm": check("manual hide preserves generation and alerts when confirmation is still required", model.stage == .review && hides == 1 && calendar.saveCount == 0 && alerts == 1)
-            case "backgroundConfirmation": check("background submission overrides foreground confirmation preference", hides == 1 && calendar.saveCount == 1 && alerts == 0 && model.stage == .receipt)
+            case "backgroundConfirmation": check("background submission overrides foreground confirmation preference", hides == 1 && calendar.saveCount == 1 && alerts == 0 && model.stage == .input && model.text.isEmpty)
             case "automatic":
-                check("background submit hides and writes exactly once", hides == 1 && calendar.saveCount == 1 && request.calls == 1 && alerts == 0 && model.stage == .receipt)
+                check("background submit hides and writes exactly once", hides == 1 && calendar.saveCount == 1 && request.calls == 1 && alerts == 0 && model.stage == .input && model.text.isEmpty && model.drafts.isEmpty && model.batchReceipts.isEmpty)
                 check("custom all-day schedule reaches calendar writer", calendar.reminder == model.preferences.allDayReminder)
             case "requestFailure": check("background model failure raises alert and preserves input without retry", alerts == 1 && hides == 1 && request.calls == 1 && calendar.saveCount == 0 && model.text == "Synthetic input" && model.stage == .input)
             case "saveFailure": check("calendar exception raises alert and retains uncertain journal receipt", alerts == 1 && calendar.saveCount == 1 && model.batchReceipts.first?.status == "uncertain")
@@ -108,17 +108,32 @@ enum WorkflowChecks {
             case "confirmConflict", "automaticConflict": check("conflict raises alert in \(scenario) mode and prevents writing", alerts == 1 && calendar.saveCount == 0 && model.stage == .review && model.drafts.first?.conflictAcknowledged == false)
             default: check("incomplete extraction opens attention path without partial writes", alerts == 1 && calendar.saveCount == 0 && model.stage == .review)
             }
+            if ["saveFailure", "uncertain", "savedWarning"].contains(scenario) {
+                check("\(scenario) retains input and result for attention", model.text == "Synthetic input" && !model.drafts.isEmpty && model.stage == .receipt)
+            }
+            if scenario == "automatic" {
+                model.persistDraft() // Closing/reopening or quitting must not resurrect completed input.
+                let reopened = AppModel(directory: root.appendingPathComponent(scenario), calendar: calendar, integrateSystem: false)
+                check("background success remains blank after restart while history survives", reopened.text.isEmpty && reopened.drafts.isEmpty && reopened.stage == .input && reopened.receipts.count == 1)
+            }
         }
         let calendar = FixtureCalendar()
         let model = AppModel(directory: root.appendingPathComponent("reviewActions"), calendar: calendar, integrateSystem: false)
         var draft = Draft(event: .init(title: "班会", startLocal: "2035-09-14T20:00:00", endLocal: "2035-09-14T21:00:00", timeZone: "Asia/Shanghai", assumptions: ["具体地点未提供", "按上下文推断年份"]), calendarID: "fixture-calendar")
         calendar.conflictTitles = ["已有安排"]; draft.conflicts = calendar.conflictTitles
         var closes = 0; model.hidePanel = { closes += 1 }
-        model.drafts = [draft]; model.stage = .review
+        model.text = "Synthetic completed input"
+        model.attachments = [Attachment(name: "synthetic.txt", data: Data("fixture".utf8), kind: "txt")]
+        model.questions = ["Synthetic question"]
+        model.drafts = [draft]; model.stage = .review; model.persistDraft()
         check("conflict plus model assumptions expose one actionable confirmation", model.reviewActionTitle == "仍然添加" && !model.canWrite)
         model.confirmAndWriteSelected()
-        check("one explicit confirmation acknowledges visible assumptions and conflicts and saves", calendar.saveCount == 1 && model.batchReceipts.first?.status == "saved")
+        check("one explicit confirmation acknowledges visible assumptions and conflicts and saves", calendar.saveCount == 1 && model.receipts.first?.status == "saved")
         check("successful explicit confirmation closes the window", closes == 1)
+        check("successful confirmation clears the complete capture session", model.stage == .input && model.text.isEmpty && model.attachments.isEmpty && model.drafts.isEmpty && model.questions.isEmpty && model.batchReceipts.isEmpty && model.editingID == nil)
+        model.persistDraft()
+        let afterAdd = AppModel(directory: root.appendingPathComponent("reviewActions"), calendar: calendar, integrateSystem: false)
+        check("confirmed add cannot reappear after restart and retains history", afterAdd.stage == .input && afterAdd.text.isEmpty && afterAdd.drafts.isEmpty && afterAdd.receipts.count == 1)
         model.confirmAndWriteSelected()
         check("repeated explicit confirmation does not duplicate a saved event", calendar.saveCount == 1)
         var incomplete = draft; incomplete.id = UUID(); incomplete.event.startLocal = nil
@@ -134,16 +149,43 @@ enum WorkflowChecks {
         check("updated conflict can be added with next explicit choice", calendar.saveCount == 2)
         var keep = draft; keep.id = UUID(); keep.selected = false
         var remove = draft; remove.id = UUID()
-        model.drafts = [keep, remove]; model.stage = .review
+        model.text = "Synthetic pending input"
+        model.attachments = [Attachment(name: "synthetic.txt", data: Data("fixture".utf8), kind: "txt")]
+        model.drafts = [keep, remove]; model.questions = ["Synthetic pending question"]; model.stage = .review
         let closesBeforeDeletion = closes
         model.deleteSelectedDrafts()
         check("delete removes only selected pending drafts without touching calendar", model.drafts.map(\.id) == [keep.id] && calendar.saveCount == 2)
         check("deleting selected drafts closes the window even with unselected drafts remaining", closes == closesBeforeDeletion + 1)
+        check("partial deletion preserves unfinished input and attachments", model.stage == .review && model.text == "Synthetic pending input" && model.attachments.count == 1 && model.questions.count == 1)
         model.deleteSelectedDrafts()
         check("deleting with no selection does not finish another operation", closes == closesBeforeDeletion + 1 && model.drafts.map(\.id) == [keep.id])
         model.drafts[0].selected = true; model.deleteSelectedDrafts()
         check("deleting final pending draft returns to input", model.stage == .input && model.drafts.isEmpty && calendar.saveCount == 2)
         check("deleting final pending draft closes the window", closes == closesBeforeDeletion + 2)
+        check("final deletion clears text attachments and prior results", model.text.isEmpty && model.attachments.isEmpty && model.questions.isEmpty && model.batchReceipts.isEmpty)
+        model.persistDraft()
+        let afterDelete = AppModel(directory: root.appendingPathComponent("reviewActions"), calendar: calendar, integrateSystem: false)
+        check("deleted session cannot reappear after restart and history is retained", afterDelete.stage == .input && afterDelete.text.isEmpty && afterDelete.drafts.isEmpty && afterDelete.receipts.count == 2)
+
+        let partialDirectory = root.appendingPathComponent("partialAdd")
+        let partial = AppModel(directory: partialDirectory, calendar: FixtureCalendar(), integrateSystem: false)
+        partial.preferences.checkConflicts = false; partial.text = "Synthetic two-event input"
+        partial.drafts = [remove, keep]; partial.stage = .review
+        partial.refreshConflicts(notify: false)
+        partial.confirmAndWriteSelected()
+        check("partial add removes only completed drafts and keeps unfinished review", partial.stage == .review && partial.drafts.map(\.id) == [keep.id] && partial.text == "Synthetic two-event input" && partial.batchReceipts.isEmpty && partial.receipts.count == 1)
+        let afterPartial = AppModel(directory: partialDirectory, calendar: FixtureCalendar(), integrateSystem: false)
+        check("restart restores only unprocessed drafts after partial add", afterPartial.drafts.map(\.id) == [keep.id] && afterPartial.stage == .review)
+        do {
+            let legacyDirectory = root.appendingPathComponent("completedRecovery")
+            let local = try LocalStore(directory: legacyDirectory)
+            var completedReceipt = OperationReceipt(batchID: UUID(), draft: remove); completedReceipt.status = "saved"
+            try local.record(completedReceipt)
+            try local.saveDraft(.init(text: "Synthetic previously completed input", drafts: [remove], questions: []))
+            let recovered = AppModel(directory: legacyDirectory, calendar: FixtureCalendar(), integrateSystem: false)
+            let saved = try local.loadDraft()
+            check("journal recovery clears completed input left by older versions or interrupted cleanup", recovered.stage == .input && recovered.text.isEmpty && recovered.drafts.isEmpty && saved == nil && recovered.receipts.count == 1)
+        } catch { check("journal recovery clears completed input left by older versions or interrupted cleanup", false) }
         calendar.hasAccess = false; model.drafts = [draft]; model.stage = .review
         check("missing permission gives the primary button a concrete authorization action", model.reviewActionTitle == "允许日历访问")
         model.confirmAndWriteSelected()

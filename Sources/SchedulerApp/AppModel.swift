@@ -73,12 +73,17 @@ final class AppModel: ObservableObject {
             preferences = try local.loadPreferences()
             try local.prune(); receipts = try local.receipts()
             if preferences.keepDraft, let saved = try local.loadDraft() {
-                text = saved.text
                 // Never restore a consumed draft: the journal is authoritative after a crash.
                 let consumed = Set(receipts.map { $0.draft.id })
-                drafts = saved.drafts.filter { !consumed.contains($0.id) }
-                questions = saved.questions
-                if !drafts.isEmpty { stage = .review }
+                let completed = Set(receipts.filter { $0.status == "saved" && $0.warning == nil }.map { $0.draft.id })
+                if !saved.drafts.isEmpty && saved.drafts.allSatisfy({ completed.contains($0.id) }) {
+                    try local.clearDraft()
+                } else {
+                    text = saved.text
+                    drafts = saved.drafts.filter { !consumed.contains($0.id) }
+                    questions = saved.questions
+                    if !drafts.isEmpty { stage = .review }
+                }
             }
         } catch { errorMessage = error.localizedDescription; store = nil }
         selectedPreset = preferences.activeProvider
@@ -141,15 +146,30 @@ final class AppModel: ObservableObject {
     }
     func deleteSelectedDrafts() {
         guard !writing, !selectedDrafts.isEmpty else { return }
-        drafts.removeAll(where: \.selected); editingID = nil; errorMessage = nil
-        if drafts.isEmpty { questions = []; errorMessage = nil; activityLabel = "已删除待添加日程"; setStage(.input) }
-        else { resizePanel?() }
-        persistDraft()
-        if let errorMessage {
-            reportFailure("草稿删除未完成", errorMessage)
-        } else {
-            hidePanel?()
+        do {
+            try finishDraftOperation(removing: Set(selectedDrafts.map(\.id)))
+            activityLabel = "已删除待添加日程"
+        } catch {
+            reportFailure("草稿删除未完成", error.localizedDescription)
         }
+    }
+    private func finishDraftOperation(removing ids: Set<UUID>) throws {
+        guard let store else { throw AppError("本机存储不可用，无法清理这次输入。") }
+        let pending = drafts.filter { !ids.contains($0.id) }
+        // Persist the end of the operation before dismissing, including for background writes.
+        if preferences.keepDraft && !pending.isEmpty {
+            try store.saveDraft(.init(text: text, drafts: pending, questions: questions))
+        } else {
+            try store.clearDraft()
+        }
+        drafts = pending; editingID = nil; errorMessage = nil; batchReceipts = []; statusMessage = ""
+        if pending.isEmpty {
+            text = ""; attachments = []; questions = []; isDemo = false
+            setStage(.input)
+        } else {
+            setStage(.review)
+        }
+        if panelIsVisible() { hidePanel?() }
     }
     var reviewHeight: CGFloat {
         var height: CGFloat = 170
@@ -177,7 +197,7 @@ final class AppModel: ObservableObject {
     func persistDraft() {
         guard let store, !isDemo else { return }
         do {
-            if preferences.keepDraft { try store.saveDraft(.init(text: text, drafts: drafts, questions: questions)) }
+            if preferences.keepDraft && (!text.isEmpty || !drafts.isEmpty || !questions.isEmpty) { try store.saveDraft(.init(text: text, drafts: drafts, questions: questions)) }
             else { try store.clearDraft() }
         } catch { errorMessage = "草稿保存失败：\(error.localizedDescription)" }
     }
@@ -337,14 +357,19 @@ final class AppModel: ObservableObject {
         let batchID = UUID(), selected = selectedDrafts
         writing = true; batchReceipts = []; errorMessage = nil; activityLabel = "正在添加日程…"
         defer {
-            writing = false; persistDraft(); setStage(.receipt)
+            writing = false
             let saved = batchReceipts.filter { $0.status == "saved" }.count
             if errorMessage != nil || batchReceipts.contains(where: { $0.status != "saved" || $0.warning != nil }) || saved != selected.count {
+                persistDraft(); setStage(.receipt)
                 let detail = errorMessage ?? batchReceipts.compactMap(\.warning).first ?? batchReceipts.first(where: { $0.status != "saved" })?.message ?? "部分日程尚未完成。"
                 reportFailure("日程添加未全部完成", "已确认添加 \(saved)/\(selected.count) 项。\n\(detail)\n请在结果或近期记录中核对，不会自动重试。")
             } else {
                 activityLabel = "已添加 \(saved) 项日程"
-                if panelIsVisible() { hidePanel?() }
+                do { try finishDraftOperation(removing: Set(selected.map(\.id))) }
+                catch {
+                    setStage(.receipt)
+                    reportFailure("日程已添加，输入清理失败", error.localizedDescription + "\n日程已写入，请勿重复添加。")
+                }
             }
         }
         for draft in selected {
