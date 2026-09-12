@@ -135,15 +135,52 @@ enum WorkflowChecks {
         var keep = draft; keep.id = UUID(); keep.selected = false
         var remove = draft; remove.id = UUID()
         model.drafts = [keep, remove]; model.stage = .review
+        let closesBeforeDeletion = closes
         model.deleteSelectedDrafts()
         check("delete removes only selected pending drafts without touching calendar", model.drafts.map(\.id) == [keep.id] && calendar.saveCount == 2)
+        check("deleting selected drafts closes the window even with unselected drafts remaining", closes == closesBeforeDeletion + 1)
+        model.deleteSelectedDrafts()
+        check("deleting with no selection does not finish another operation", closes == closesBeforeDeletion + 1 && model.drafts.map(\.id) == [keep.id])
         model.drafts[0].selected = true; model.deleteSelectedDrafts()
         check("deleting final pending draft returns to input", model.stage == .input && model.drafts.isEmpty && calendar.saveCount == 2)
+        check("deleting final pending draft closes the window", closes == closesBeforeDeletion + 2)
         calendar.hasAccess = false; model.drafts = [draft]; model.stage = .review
         check("missing permission gives the primary button a concrete authorization action", model.reviewActionTitle == "允许日历访问")
         model.confirmAndWriteSelected()
         await settle { calendar.accessRequests == 1 }
         check("permission request refreshes calendars without silently adding the draft", calendar.accessRequests == 1 && model.calendarAuthorized && calendar.saveCount == 2)
+        let updateDirectory = root.appendingPathComponent("updateRestart")
+        let updateModel = AppModel(directory: updateDirectory, calendar: FixtureCalendar(), integrateSystem: false)
+        func restartRejected() -> Bool {
+            do { try updateModel.prepareForUpdateRestart(); return false } catch { return true }
+        }
+        updateModel.text = "Synthetic unsent input"; updateModel.preferences.keepDraft = false
+        check("update cannot discard input when draft retention is disabled", restartRejected())
+        updateModel.preferences.keepDraft = true
+        updateModel.attachments = [Attachment(name: "synthetic.txt", data: Data("fixture".utf8), kind: "txt")]
+        check("update cannot discard an unprocessed attachment", restartRejected())
+        updateModel.attachments = []; updateModel.editingID = UUID()
+        check("update cannot interrupt an open event editor", restartRejected())
+        updateModel.editingID = nil; updateModel.writing = true
+        check("update restart is blocked during calendar write", restartRejected())
+        let updater = AppUpdater(model: updateModel)
+        var installs = 0
+        check("Sparkle installation is deferred while app work is active", updater.postponeInstallationIfBusy { installs += 1 } && installs == 0)
+        updateModel.writing = false; updateModel.testing = true
+        await Task.yield()
+        check("deferred update still waits for model connection testing", installs == 0)
+        updateModel.testing = false
+        await settle { installs == 1 }
+        updateModel.activityLabel = "idle"
+        await Task.yield()
+        check("deferred install resumes exactly once after work finishes", installs == 1)
+        do {
+            try updateModel.prepareForUpdateRestart()
+            let reopened = AppModel(directory: updateDirectory, calendar: FixtureCalendar(), integrateSystem: false)
+            check("update persists and restores unfinished text", reopened.text == "Synthetic unsent input" && reopened.preferences.keepDraft)
+        } catch { check("update persists and restores unfinished text", false) }
+        updateModel.preferences.keepDraft = false; updateModel.text = ""; updateModel.drafts = []
+        check("idle update respects disabled draft retention", !restartRejected())
         print("\n\(passed) workflow checks passed, \(failed) failed. Injected model and calendar only; no network, Keychain or real calendar access.")
         return failed == 0 ? 0 : 1
     }

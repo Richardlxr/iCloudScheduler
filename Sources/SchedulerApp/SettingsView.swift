@@ -4,6 +4,7 @@ import SchedulerCore
 
 struct AppSettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var updater: AppUpdater
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
@@ -19,6 +20,9 @@ struct AppSettingsView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if Bundle.main.bundleIdentifier == "dev.icloudscheduler.update-test" {
+                        Text("更新隔离测试 · 不读取正式配置或日历").foregroundStyle(.orange).font(.headline)
+                    }
                     Text(model.settingsPage.rawValue).font(.system(size: 21, weight: .semibold))
                     if let message = model.errorMessage { Notice(message: message, dismiss: { model.errorMessage = nil }) }
                     switch model.settingsPage {
@@ -26,6 +30,7 @@ struct AppSettingsView: View {
                     case .calendar: CalendarSettingsView(model: model)
                     case .general: GeneralSettingsView(model: model)
                     case .privacy: privacy
+                    case .updates: UpdateSettingsView(updater: updater)
                     }
                 }.padding(25).frame(maxWidth: .infinity, alignment: .leading)
             }

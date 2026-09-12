@@ -6,9 +6,9 @@ import SchedulerCore
 
 enum CaptureStage { case input, analyzing, review, receipt, history }
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general = "通用", models = "模型配置", calendar = "日历与提醒", privacy = "隐私与数据"
+    case general = "通用", models = "模型配置", calendar = "日历与提醒", privacy = "隐私与数据", updates = "软件更新"
     var id: String { rawValue }
-    var icon: String { switch self { case .general: "slider.horizontal.3"; case .models: "cpu"; case .calendar: "calendar"; case .privacy: "checkmark.shield" } }
+    var icon: String { switch self { case .general: "slider.horizontal.3"; case .models: "cpu"; case .calendar: "calendar"; case .privacy: "checkmark.shield"; case .updates: "arrow.triangle.2.circlepath" } }
 }
 
 @MainActor
@@ -140,11 +140,16 @@ final class AppModel: ObservableObject {
         writeSelected()
     }
     func deleteSelectedDrafts() {
-        guard !writing else { return }
-        drafts.removeAll(where: \.selected); editingID = nil
+        guard !writing, !selectedDrafts.isEmpty else { return }
+        drafts.removeAll(where: \.selected); editingID = nil; errorMessage = nil
         if drafts.isEmpty { questions = []; errorMessage = nil; activityLabel = "已删除待添加日程"; setStage(.input) }
         else { resizePanel?() }
         persistDraft()
+        if let errorMessage {
+            reportFailure("草稿删除未完成", errorMessage)
+        } else {
+            hidePanel?()
+        }
     }
     var reviewHeight: CGFloat {
         var height: CGFloat = 170
@@ -175,6 +180,24 @@ final class AppModel: ObservableObject {
             if preferences.keepDraft { try store.saveDraft(.init(text: text, drafts: drafts, questions: questions)) }
             else { try store.clearDraft() }
         } catch { errorMessage = "草稿保存失败：\(error.localizedDescription)" }
+    }
+    var updateWorkInProgress: Bool { isGenerating || writing || testing }
+    func prepareForUpdateRestart() throws {
+        guard !updateWorkInProgress else { throw AppError("日程任务仍在进行，请完成后再安装更新。") }
+        guard editingID == nil else { throw AppError("请先完成日程编辑，再安装更新。") }
+        let consumed = Set(receipts.filter { !["failed", "undone"].contains($0.status) }.map { $0.draft.id })
+        let pending = drafts.filter { !consumed.contains($0.id) }
+        let completed = stage == .receipt && !batchReceipts.isEmpty && pending.isEmpty &&
+            batchReceipts.allSatisfy { $0.status == "saved" && $0.warning == nil } && errorMessage == nil
+        guard completed || attachments.isEmpty else { throw AppError("当前输入有尚未处理的附件，请先完成或清除这次输入，再安装更新。") }
+        guard completed || preferences.keepDraft || (text.isEmpty && pending.isEmpty) else {
+            throw AppError("当前有未完成的输入。请先处理，或开启“保留未完成的输入”，再安装更新。")
+        }
+        guard let store else { throw AppError("本机存储不可用，无法安全保存更新前的状态。") }
+        try store.savePreferences(preferences)
+        if preferences.keepDraft && !completed { try store.saveDraft(.init(text: text, drafts: pending, questions: questions)) }
+        else { try store.clearDraft() }
+        if completed { text = ""; attachments = []; drafts = []; questions = [] }
     }
     func applyAppearance() {
         NSApp.appearance = preferences.appearance == "light" ? NSAppearance(named: .aqua) : preferences.appearance == "dark" ? NSAppearance(named: .darkAqua) : nil

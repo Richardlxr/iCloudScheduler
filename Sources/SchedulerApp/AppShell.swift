@@ -21,7 +21,15 @@ enum SchedulerMain {
             app.setActivationPolicy(.prohibited)
             exit(NativeChecks.run())
         }
-        let delegate = AppDelegate(model: CommandLine.arguments.contains("--review-fixture") ? WorkflowChecks.reviewFixture() : AppModel())
+        let model: AppModel
+        if Bundle.main.bundleIdentifier == "dev.icloudscheduler.update-test" {
+            let directory = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("update-ui-store")
+            model = AppModel(directory: directory, calendar: FixtureCalendar(), readKey: { _ in "" }, integrateSystem: false)
+            model.settingsPage = .updates
+        } else {
+            model = CommandLine.arguments.contains("--review-fixture") ? WorkflowChecks.reviewFixture() : AppModel()
+        }
+        let delegate = AppDelegate(model: model)
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
@@ -32,6 +40,8 @@ enum SchedulerMain {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model: AppModel
+    private lazy var updater = AppUpdater(model: model)
+    private var updateObserver: AnyCancellable?
     init(model: AppModel) { self.model = model; super.init() }
     private var statusItem: NSStatusItem?
     private var panel: QuickPanel?
@@ -51,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(item("近期记录", #selector(showHistory), ""))
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(showSettings), ","))
+        let updateItem = makeUpdateMenuItem()
+        menu.addItem(updateItem)
+        updateObserver = updater.$availableVersion.sink { version in
+            updateItem.title = version.map { "发现新版本 \($0)…" } ?? "检查更新…"
+        }
         menu.addItem(.separator())
         menu.addItem(item("退出 iCloudScheduler", #selector(quit), "q"))
         statusItem?.menu = menu
@@ -70,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.errorMessage = "快捷键已被占用。请在“设置 → 通用”录制其他组合键，或从菜单栏打开窗口。"
         }
         model.applyAppearance(); showCapture()
+        if !model.smokeMode || Bundle.main.bundleIdentifier == "dev.icloudscheduler.update-test" { updater.start() }
+        if Bundle.main.bundleIdentifier == "dev.icloudscheduler.update-test" { showSettings() }
     }
     func applicationWillTerminate(_ notification: Notification) { model.persistDraft() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -78,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let main = NSMenu()
         let appItem = NSMenuItem(); let appMenu = NSMenu()
         appMenu.addItem(item("设置…", #selector(showSettings), ","))
+        appMenu.addItem(makeUpdateMenuItem())
         appMenu.addItem(.separator()); appMenu.addItem(item("退出 iCloudScheduler", #selector(quit), "q"))
         appItem.submenu = appMenu; main.addItem(appItem)
         let editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: ""); let edit = NSMenu(title: "编辑")
@@ -87,6 +105,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         editItem.submenu = edit; main.addItem(editItem); NSApp.mainMenu = main
     }
     private func item(_ title: String, _ action: Selector, _ key: String) -> NSMenuItem { let item = NSMenuItem(title: title, action: action, keyEquivalent: key); item.target = self; return item }
+    private func makeUpdateMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "检查更新…", action: Selector(("checkForUpdates:")), keyEquivalent: "")
+        item.target = updater.controller
+        return item
+    }
     @objc func showCapture() {
         if panel == nil {
             let window = QuickPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 380), styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -137,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 630), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "iCloudScheduler 设置"; window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: AppSettingsView(model: model))
+            window.contentView = NSHostingView(rootView: AppSettingsView(model: model, updater: updater))
             window.minSize = NSSize(width: 710, height: 570); window.center(); settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil)
