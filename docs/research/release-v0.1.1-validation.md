@@ -31,14 +31,16 @@
 
 两项均通过应用本身的 JSON 解码及内容断言。日志保存的是解码后的合成结果，不包含 Key、真实输入或日历数据。可通过 `--model-contract-check` 显式重跑；会读取本机保存的 MiniMax 配置并产生两次 API 请求，CI 不运行此检查。
 
-Computer Use 复现了旧版“冲突已勾选但添加禁用”的真实界面；新版隔离界面中主操作可用。隔离实例使用内存日历，不写入真实 EventKit；已补充醒目的“隔离测试 · 不会写入真实日历”标记，避免混淆。真实应用已安装更新并恢复原草稿。真实日历写入与成功后自动收起的完整系统流程，仍需完成 macOS 授权后验收，不用模拟回执冒充真实写入。
+Computer Use 复现了旧版“冲突已勾选但添加禁用”的真实界面；新版隔离界面中主操作可用。隔离实例使用内存日历，不写入真实 EventKit；已补充醒目的“隔离测试 · 不会写入真实日历”标记，避免混淆。真实应用已安装更新并恢复原草稿。随后恢复 macOS 日历授权，由用户在正式窗口确认添加；真实操作记录为 saved，包含系统事件 ID，保存后的读回检查通过，且没有提醒异常。界面也显示“已保存，iCloud 同步由系统完成”。没有把模拟回执当作真实写入。跨设备同步和实际提醒触发仍未验收。
 
 MiniMax 参数依照[官方 OpenAI 兼容文档](https://platform.minimax.io/docs/api-reference/text-openai-api)：M3 使用 disabled thinking、reasoning_split，temperature 为0；M2.x 不宣称可以关闭思考。只读取最终 content 并严格校验。没有假设所有兼容服务都支持 `response_format`，也没有增加自动修复/重试请求。固定输出契约和字段规则位于 `LLMClient.extractionPrompt`。
 
 ## 分发
 
-- Universal `.app` 验证包含 x86_64 与 arm64；本机安装副本与构建二进制逐字节一致。
+- Universal `.app` 验证包含 x86_64 与 arm64；本机功能修复副本在安装时与构建二进制逐字节一致；后续发布构建另含等价的高度计算拆分，用于兼容 CI 的较旧 Swift 编译器。保留已获授权的运行实例，不为该编译兼容调整再次中断用户授权。
 - DMG 已验证校验和、只读挂载、应用签名、内部二进制一致性，以及 Applications 链接；挂载后已卸载。
 - 同时提供 DMG、ZIP 与 SHA256SUMS。DMG 约3.3 MB，ZIP约2.8 MB。
 - ad-hoc 签名，未做 Apple Developer ID 签名或公证；升级后系统可能要求重新授权日历或钥匙串。
 - 编译日志、测试日志、DMG 验证及隔离测试数据库保存在忽略的 `dist/validation/`，不上传用户数据。
+
+发布结果：v0.1.1 已上传 DMG、ZIP 和 SHA256SUMS，GitHub 返回的三个文件 SHA-256 均与本地一致。发布代码提交的 GitHub CI 已通过。
