@@ -8,7 +8,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Offline core checks
-        run: swift run SchedulerChecks
+        run: |
+          swift build --product SchedulerChecks
+          checks_binary="$(swift build --show-bin-path)/SchedulerChecks"
+          codesign --force --sign - "$checks_binary"
+          codesign --verify --strict "$checks_binary"
+          "$checks_binary"
       - name: Build local application
         run: ./scripts/build-app.sh release
       - name: Offline native storage and attachment checks
