@@ -110,6 +110,49 @@ final class AppModel: ObservableObject {
         !isDemo && !writing && editingID == nil && !selectedDrafts.isEmpty &&
         selectedDrafts.allSatisfy { DraftValidator.errors($0).isEmpty }
     }
+    var reviewNeedsAcknowledgment: Bool {
+        !questions.isEmpty || selectedDrafts.contains { !$0.conflicts.isEmpty || !DraftValidator.reviewNotes($0).isEmpty }
+    }
+    var reviewActionTitle: String {
+        if writing { return "正在添加…" }
+        if !calendar.hasAccess { return "允许日历访问" }
+        if editingID != nil { return "请先完成编辑" }
+        if selectedDrafts.contains(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) { return "补全后添加" }
+        if reviewNeedsAcknowledgment { return selectedDrafts.count == 1 ? "仍然添加" : "仍然添加 \(selectedDrafts.count) 项" }
+        return selectedDrafts.count == 1 ? "添加到日历" : "添加 \(selectedDrafts.count) 项到日历"
+    }
+    func confirmAndWriteSelected() {
+        guard !writing, editingID == nil, !selectedDrafts.isEmpty else { return }
+        guard calendar.hasAccess else { authorizeCalendar(); return }
+        if let incomplete = selectedDrafts.first(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) {
+            editingID = incomplete.id; resizePanel?()
+            return
+        }
+        // Refresh before acknowledging. If the conflict changed since it was shown, display it first.
+        let previous = selectedDrafts.map { $0.conflicts }
+        refreshConflicts(notify: false)
+        guard previous == selectedDrafts.map({ $0.conflicts }) else {
+            reportFailure("冲突已变化", "请检查更新后的冲突，再选择仍然添加。"); return
+        }
+        for i in drafts.indices where drafts[i].selected {
+            drafts[i].reviewed = true; drafts[i].conflictAcknowledged = true
+        }
+        writeSelected()
+    }
+    func deleteSelectedDrafts() {
+        guard !writing else { return }
+        drafts.removeAll(where: \.selected); editingID = nil
+        if drafts.isEmpty { questions = []; errorMessage = nil; activityLabel = "已删除待添加日程"; setStage(.input) }
+        else { resizePanel?() }
+        persistDraft()
+    }
+    var reviewHeight: CGFloat {
+        let cardHeight = drafts.reduce(CGFloat(0)) { height, draft in
+            height + 150 + CGFloat(DraftValidator.reviewNotes(draft).joined().count / 46 + (DraftValidator.reviewNotes(draft).isEmpty ? 0 : 1)) * 20
+                + CGFloat(draft.conflicts.isEmpty ? 0 : 52) + CGFloat(DraftValidator.errorsAfterReview(draft).isEmpty ? 0 : 45)
+        }
+        return min(660, max(320, 170 + cardHeight + (editingID == nil ? 0 : 330) + CGFloat(questions.isEmpty ? 0 : 50)))
+    }
     func inputChanged() {
         generation?.cancel(); revision = UUID(); isGenerating = false; drafts = []; questions = []; isDemo = false
         if stage == .analyzing { stage = .input; resizePanel?() }
@@ -132,7 +175,7 @@ final class AppModel: ObservableObject {
     }
     func setStage(_ newStage: CaptureStage) { if newStage == .input { editingID = nil }; stage = newStage; resizePanel?() }
     private func reportFailure(_ title: String, _ message: String) {
-        errorMessage = message; activityLabel = title
+        errorMessage = stage == .review && ["发现日程冲突", "冲突已变化"].contains(title) ? nil : message; activityLabel = title
         presentFailure?(title, message)
     }
     func analyze() {
@@ -173,7 +216,7 @@ final class AppModel: ObservableObject {
                     reportFailure("未生成可添加的日程", questions.isEmpty ? "没有识别到日程，请补充安排后重新提交。" : questions.joined(separator: "\n")); return
                 }
                 if drafts.contains(where: { !$0.conflicts.isEmpty }) {
-                    reportFailure("发现日程冲突", "新日程与已有安排时间重叠，尚未添加。请检查冲突后修改时间，或明确选择仍然添加。")
+                    reportFailure("发现日程冲突", "新日程与已有安排重叠。请在窗口中选择“仍然添加”或“删除”。")
                     return
                 }
                 if automatic && (background || !preferences.confirmBeforeAdding) {
@@ -221,7 +264,7 @@ final class AppModel: ObservableObject {
     func authorizeCalendar() {
         Task {
             do { try await calendar.requestAccess(); refreshCalendars(); refreshConflicts() }
-            catch { errorMessage = error.localizedDescription }
+            catch { reportFailure("无法访问日历", error.localizedDescription) }
         }
     }
     func refreshConflicts(notify: Bool = true) {
@@ -270,7 +313,10 @@ final class AppModel: ObservableObject {
             if errorMessage != nil || batchReceipts.contains(where: { $0.status != "saved" || $0.warning != nil }) || saved != selected.count {
                 let detail = errorMessage ?? batchReceipts.compactMap(\.warning).first ?? batchReceipts.first(where: { $0.status != "saved" })?.message ?? "部分日程尚未完成。"
                 reportFailure("日程添加未全部完成", "已确认添加 \(saved)/\(selected.count) 项。\n\(detail)\n请在结果或近期记录中核对，不会自动重试。")
-            } else { activityLabel = "已添加 \(saved) 项日程" }
+            } else {
+                activityLabel = "已添加 \(saved) 项日程"
+                if panelIsVisible() { hidePanel?() }
+            }
         }
         for draft in selected {
             if receipts.contains(where: { $0.draft.id == draft.id && !["failed", "undone"].contains($0.status) }) {

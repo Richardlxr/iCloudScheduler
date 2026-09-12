@@ -15,9 +15,9 @@
 
 ## 下载与安装
 
-前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.1.0-macos-universal.zip`，解压后将 `iCloudScheduler.app` 拖入“应用程序”目录。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
+前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.1.1-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
 
-当前下载包使用 ad-hoc 签名，尚未通过 Apple Developer ID 签名与公证，macOS 可能阻止首次打开。也可按下面的步骤从源码构建；一个 Universal 安装包同时包含 arm64 与 x86_64 两种架构。
+当前下载包使用 ad-hoc 签名，尚未通过 Apple Developer ID 签名与公证，macOS 可能阻止首次打开；更新后可能需要重新授权日历和钥匙串。也可按下面的步骤从源码构建；一个 Universal 安装包同时包含 arm64 与 x86_64 两种架构。
 
 ## 构建与运行
 
@@ -37,6 +37,10 @@ open dist/iCloudScheduler.app
 3. 在日历设置允许访问，明确选中 `iCloud / 你的日历`，保存默认日历和提前提醒。
 4. 输入安排，按提交快捷键生成。默认检查草稿后添加，也可在“日历与提醒”关闭“添加前确认”，让信息完整的日程自动添加。
 
+确认窗口直接显示具体假设和时间冲突。存在冲突时，底部固定显示 **“删除 / 仍然添加”**；“仍然添加”一次完成确认并写入，全部成功后窗口自动收起，记录可在“近期记录”查看；删除仅移除选中的待添加草稿。真正缺少时间时，“补全后添加”直接打开编辑，不再留下无法点击的灰色按钮。
+
+模型只返回固定字段的 JSON；没有年份的月日按当前年或下一年展开，缺结束时间默认 60 分钟，缺地点留空。默认规则不作为阻塞假设，非必要信息不触发追问；真正缺少具体时刻时仍需补全。
+
 “通用”可选择 `Enter` 或 `⌘ Enter` 提交，`Shift Enter` 换行。开启“提交后后台运行”会在任务开始后收起窗口；`Esc` 和呼出快捷键只收起，不提交、不取消。生成或添加失败、读回结果不确定时会重新打开窗口并弹窗提示，不自动重试。开启后台运行时直接尝试添加，不再要求确认；只有确认全部添加成功才保持安静。冲突、信息缺失、部分失败或提醒被系统调整都会弹窗。前台确认模式下若手动收起窗口，草稿生成后也会弹窗请求确认。退出应用会中断生成。
 
 拖动窗口后会记住位置，重启后恢复；原显示器不可用时回到可见区域。“日历与提醒”支持自定义全天提醒的提前天数（0–7 天）、小时与分钟，以事件时区计算。
@@ -55,7 +59,7 @@ swift run SchedulerChecks
 
 已实现输入、设置、模型请求、日程编辑、指定日历写入、冲突提示、操作记录、恢复核对和有条件撤销。自动找空档、重复规则、DOCX/ICS、上游原生 PDF 上传、流式响应和自动更新尚未实现。模型失败不自动重试，日历保存成功不代表其他设备已经完成同步。
 
-自动化验收使用合成模型和日历，共 112 项离线检查通过；这些检查不代表六家真实推理、跨设备同步或系统提醒已全部验收。详见 [开发与验证说明](docs/development.md)及[v0.1.0 发布核验](docs/research/release-v0.1.0-validation.md)。
+自动化验收使用合成模型和日历，共 127 项离线检查通过；这些检查不代表六家真实推理、跨设备同步或系统提醒已全部验收。详见 [开发与验证说明](docs/development.md)及[v0.1.1 发布核验](docs/research/release-v0.1.1-validation.md)。
 
 窗口记忆、可选提交快捷键、后台处理和自定义全天提醒的后续验证见 [后台流程验收记录](docs/research/background-validation.md)。
 

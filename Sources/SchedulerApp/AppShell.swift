@@ -7,6 +7,11 @@ import Combine
 enum SchedulerMain {
     @MainActor static func main() {
         let app = NSApplication.shared
+        if CommandLine.arguments.contains("--model-contract-check") {
+            app.setActivationPolicy(.prohibited)
+            Task { @MainActor in exit(await ModelContractChecks.run()) }
+            app.run(); return
+        }
         if CommandLine.arguments.contains("--workflow-check") {
             app.setActivationPolicy(.prohibited)
             Task { @MainActor in exit(await WorkflowChecks.run()) }
@@ -16,7 +21,7 @@ enum SchedulerMain {
             app.setActivationPolicy(.prohibited)
             exit(NativeChecks.run())
         }
-        let delegate = AppDelegate()
+        let delegate = AppDelegate(model: CommandLine.arguments.contains("--review-fixture") ? WorkflowChecks.reviewFixture() : AppModel())
         app.delegate = delegate
         app.setActivationPolicy(.accessory)
         app.run()
@@ -26,7 +31,8 @@ enum SchedulerMain {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let model = AppModel()
+    private let model: AppModel
+    init(model: AppModel) { self.model = model; super.init() }
     private var statusItem: NSStatusItem?
     private var panel: QuickPanel?
     private var settingsWindow: NSWindow?
@@ -104,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let anchor = saved.flatMap { $0.count == 2 ? NSPoint(x: $0[0], y: $0[1]) : nil }
         let screens = NSScreen.screens.map(\.visibleFrame)
         let fallback = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let height: CGFloat = model.stage == .input ? (model.attachments.isEmpty ? 285 : 410) : model.stage == .analyzing ? 245 : 610
+        let height: CGFloat = model.stage == .input ? (model.attachments.isEmpty ? 285 : 410) : model.stage == .analyzing ? 245 : model.stage == .review ? model.reviewHeight : 440
         panel.setContentSize(NSSize(width: 480, height: height))
         panel.setFrame(PanelPlacement.frame(size: panel.frame.size, anchor: anchor, screens: screens, fallback: fallback), display: true)
     }
@@ -119,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func toggleCapture() { if panel?.isVisible == true && panel?.isKeyWindow == true { hideCapture() } else { showCapture() } }
     private func presentFailure(title: String, message: String) {
         showCapture()
+        if model.stage == .review && ["发现日程冲突", "冲突已变化"].contains(title) { return }
         guard let panel, panel.attachedSheet == nil else { return }
         let alert = NSAlert(); alert.alertStyle = .warning
         alert.messageText = title; alert.informativeText = message
@@ -132,7 +139,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.title = "iCloudScheduler 设置"; window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: AppSettingsView(model: model))
             window.minSize = NSSize(width: 710, height: 570); window.center(); settingsWindow = window
-            model.selectProvider(model.selectedPreset)
         }
         NSApp.activate(ignoringOtherApps: true); settingsWindow?.makeKeyAndOrderFront(nil)
         panel?.orderOut(nil)

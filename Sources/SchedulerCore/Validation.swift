@@ -70,6 +70,20 @@ public enum DraftValidator {
             $0.selected && !$0.reviewed && !$0.conflictAcknowledged && errors($0, now: now).isEmpty
         }
     }
+    // Explicit UI confirmation acknowledges visible warnings, but never bypasses missing data or invalid dates.
+    public static func errorsAfterReview(_ draft: Draft, now: Date = Date(), requireCalendar: Bool = true) -> [String] {
+        var confirmed = draft; confirmed.reviewed = true; confirmed.conflictAcknowledged = true
+        return errors(confirmed, now: now, requireCalendar: requireCalendar)
+    }
+    public static func reviewNotes(_ draft: Draft, now: Date = Date()) -> [String] {
+        var notes = draft.event.assumptions
+        if let interval = try? Temporal.interval(draft.event) {
+            if interval.start < now { notes.append("开始时间已过去。") }
+            else if !draft.event.allDay, let minutes = draft.event.reminderMinutes, (0...10080).contains(minutes),
+                    interval.start.addingTimeInterval(Double(-minutes * 60)) < now { notes.append("提醒时间已过去，可能无法按原计划提醒。") }
+        }
+        return notes
+    }
     public static func errors(_ draft: Draft, now: Date = Date(), requireCalendar: Bool = true) -> [String] {
         var errors: [String] = []
         let event = draft.event
@@ -103,9 +117,9 @@ public enum ExtractionDecoder {
         let required: Set<String> = ["title", "startLocal", "endLocal", "timeZone", "allDay", "location", "notes", "reminderMinutes", "missing", "assumptions", "source"]
         for event in events where Set(event.keys) != required { throw AppError("模型返回的日程字段不符合契约，请重新分析。") }
         let extraction = try JSONDecoder().decode(Extraction.self, from: data)
-        guard extraction.questions.count <= 20, extraction.questions.allSatisfy({ $0.count <= 1000 }),
-              extraction.events.allSatisfy({ $0.title.count <= 200 && $0.source.count <= 4000 && $0.notes.count <= 10000 && $0.missing.count <= 20 && $0.assumptions.count <= 20 }) else {
-            throw AppError("模型返回的内容超出长度限制。")
+        guard (extraction.events.isEmpty || extraction.questions.isEmpty), extraction.questions.count <= 20, extraction.questions.allSatisfy({ $0.count <= 1000 }),
+              extraction.events.allSatisfy({ $0.title.count <= 200 && $0.source.count <= 4000 && $0.notes.count <= 10000 && $0.missing.count <= 20 && $0.assumptions.count <= 20 && ($0.missing + $0.assumptions).allSatisfy({ $0.count <= 1000 }) }) else {
+            throw AppError("模型输出不符合日程契约：请勿附加对话追问或超长内容。")
         }
         return extraction
     }

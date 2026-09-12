@@ -58,6 +58,19 @@ check("conflict requires acknowledgment") { var d = draft; d.conflicts = ["已�
 check("conflict explicitly acknowledged") { var d = draft; d.conflicts = ["已有会议"]; d.conflictAcknowledged = true; return DraftValidator.errors(d, now: now).isEmpty }
 check("past date requires review") { !DraftValidator.errors(draft, now: Date(timeIntervalSince1970: 2208988800)).isEmpty }
 
+check("explicit review accepts assumptions and conflict without hiding the underlying conditions") {
+    var d = draft; d.event.assumptions = ["采用默认时长"]; d.conflicts = ["已有会议"]
+    return DraftValidator.errorsAfterReview(d, now: now).isEmpty && !DraftValidator.errors(d, now: now).isEmpty && DraftValidator.reviewNotes(d, now: now) == d.event.assumptions
+}
+check("explicit review cannot bypass invalid dates or missing fields") {
+    var d = draft; d.event.startLocal = nil
+    var missing = draft; missing.event.missing = ["日期矛盾"]
+    return !DraftValidator.errorsAfterReview(d, now: now).isEmpty && !DraftValidator.errorsAfterReview(missing, now: now).isEmpty
+}
+check("past reminder is visible as a concrete review note") {
+    let shortlyBefore = try Temporal.interval(event).start.addingTimeInterval(-60)
+    return !DraftValidator.reviewNotes(draft, now: shortlyBefore).isEmpty && DraftValidator.errorsAfterReview(draft, now: shortlyBefore).isEmpty
+}
 check("base prefix is preserved") { try Endpoint.url(base: "https://example.com/team/v1/").absoluteString == "https://example.com/team/v1/chat/completions" }
 check("full endpoint not doubled") { try Endpoint.url(base: "https://example.com/v1/chat/completions").absoluteString == "https://example.com/v1/chat/completions" }
 check("model discovery from full endpoint") { try Endpoint.url(base: "https://example.com/v1/chat/completions", resource: "models").absoluteString == "https://example.com/v1/models" }
@@ -68,6 +81,7 @@ for preset in ProviderPreset.all where preset.id != "custom" { check("preset end
 
 let validJSON = #"{"events":[{"title":"会议","startLocal":"2030-06-18T14:00:00","endLocal":"2030-06-18T15:00:00","timeZone":"Asia/Shanghai","allDay":false,"location":"","notes":"","reminderMinutes":15,"missing":[],"assumptions":[],"source":"会议"}],"questions":[]}"#
 check("strict extraction decoded") { try ExtractionDecoder.decode(validJSON).events.count == 1 }
+check("event response rejects extra conversational questions") { rejects { _ = try ExtractionDecoder.decode(validJSON.replacingOccurrences(of: "\"questions\":[]", with: "\"questions\":[\"线上还是线下？\"]")) } }
 check("fenced JSON decoded without arbitrary slicing") { try ExtractionDecoder.decode("```json\n" + validJSON + "\n```").events.count == 1 }
 check("surrounding prose rejected") { rejects { _ = try ExtractionDecoder.decode("Here's your plan: " + validJSON) } }
 check("extra action field rejected") { rejects { _ = try ExtractionDecoder.decode(validJSON.replacingOccurrences(of: "\"questions\":[]", with: "\"questions\":[],\"writeCalendar\":true")) } }

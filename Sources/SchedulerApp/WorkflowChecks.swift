@@ -2,14 +2,15 @@ import AppKit
 import SchedulerCore
 
 @MainActor
-private final class FixtureCalendar: CalendarAccess {
+final class FixtureCalendar: CalendarAccess {
     var hasAccess = true
+    var accessRequests = 0
     var saveCount = 0
     var outcome = "saved"
     var conflictTitles: [String] = []
     var reminder: AllDayReminder?
-    func requestAccess() async throws {}
-    func calendars() -> [CalendarChoice] { [] }
+    func requestAccess() async throws { accessRequests += 1; hasAccess = true }
+    func calendars() -> [CalendarChoice] { [.init(id: "fixture-calendar", title: "测试日历", source: "本地测试")] }
     func refresh() {}
     func conflicts(for draft: Draft) throws -> [String] { conflictTitles }
     func save(_ receipt: OperationReceipt, allDayReminder: AllDayReminder) throws -> OperationReceipt {
@@ -40,6 +41,17 @@ private final class FixtureRequest {
 
 @MainActor
 enum WorkflowChecks {
+    static func reviewFixture() -> AppModel {
+        let calendar = FixtureCalendar(); calendar.conflictTitles = ["已有安排 · 20:00 – 21:00"]
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("dist/validation/ui-fixtures/\(UUID().uuidString)")
+        let model = AppModel(directory: root, calendar: calendar, readKey: { _ in "fixture" }, extractor: { _, _, _, _, _, _ in
+            Extraction(events: [.init(title: "班会", startLocal: "2035-09-14T20:00:00", endLocal: "2035-09-14T21:00:00", timeZone: "Asia/Shanghai", reminderMinutes: 60, assumptions: ["采用 60 分钟时长，请核对。"], source: "9.14晚上8点班会")])
+        }, integrateSystem: false)
+        model.calendarAuthorized = true; model.calendars = calendar.calendars(); model.preferences.calendarID = "fixture-calendar"
+        model.text = "9.14晚上8点班会，提前1小时提醒"
+        model.preferences.runInBackground = true
+        return model
+    }
     static func run() async -> Int32 {
         var passed = 0, failed = 0
         func check(_ name: String, _ value: Bool) {
@@ -97,6 +109,41 @@ enum WorkflowChecks {
             default: check("incomplete extraction opens attention path without partial writes", alerts == 1 && calendar.saveCount == 0 && model.stage == .review)
             }
         }
+        let calendar = FixtureCalendar()
+        let model = AppModel(directory: root.appendingPathComponent("reviewActions"), calendar: calendar, integrateSystem: false)
+        var draft = Draft(event: .init(title: "班会", startLocal: "2035-09-14T20:00:00", endLocal: "2035-09-14T21:00:00", timeZone: "Asia/Shanghai", assumptions: ["具体地点未提供", "按上下文推断年份"]), calendarID: "fixture-calendar")
+        calendar.conflictTitles = ["已有安排"]; draft.conflicts = calendar.conflictTitles
+        var closes = 0; model.hidePanel = { closes += 1 }
+        model.drafts = [draft]; model.stage = .review
+        check("conflict plus model assumptions expose one actionable confirmation", model.reviewActionTitle == "仍然添加" && !model.canWrite)
+        model.confirmAndWriteSelected()
+        check("one explicit confirmation acknowledges visible assumptions and conflicts and saves", calendar.saveCount == 1 && model.batchReceipts.first?.status == "saved")
+        check("successful explicit confirmation closes the window", closes == 1)
+        model.confirmAndWriteSelected()
+        check("repeated explicit confirmation does not duplicate a saved event", calendar.saveCount == 1)
+        var incomplete = draft; incomplete.id = UUID(); incomplete.event.startLocal = nil
+        model.drafts = [incomplete]; model.stage = .review
+        model.confirmAndWriteSelected()
+        check("incomplete schedule opens editor instead of leaving a disabled button", model.editingID == incomplete.id && calendar.saveCount == 1)
+        model.editingID = nil; draft.id = UUID(); model.drafts = [draft]
+        calendar.conflictTitles = ["刚刚新增的安排"]
+        var alerts = 0; model.presentFailure = { _, _ in alerts += 1 }
+        model.confirmAndWriteSelected()
+        check("conflict changed since display requires a fresh explicit choice", alerts == 1 && calendar.saveCount == 1 && model.drafts[0].conflicts == calendar.conflictTitles)
+        model.confirmAndWriteSelected()
+        check("updated conflict can be added with next explicit choice", calendar.saveCount == 2)
+        var keep = draft; keep.id = UUID(); keep.selected = false
+        var remove = draft; remove.id = UUID()
+        model.drafts = [keep, remove]; model.stage = .review
+        model.deleteSelectedDrafts()
+        check("delete removes only selected pending drafts without touching calendar", model.drafts.map(\.id) == [keep.id] && calendar.saveCount == 2)
+        model.drafts[0].selected = true; model.deleteSelectedDrafts()
+        check("deleting final pending draft returns to input", model.stage == .input && model.drafts.isEmpty && calendar.saveCount == 2)
+        calendar.hasAccess = false; model.drafts = [draft]; model.stage = .review
+        check("missing permission gives the primary button a concrete authorization action", model.reviewActionTitle == "允许日历访问")
+        model.confirmAndWriteSelected()
+        await settle { calendar.accessRequests == 1 }
+        check("permission request refreshes calendars without silently adding the draft", calendar.accessRequests == 1 && model.calendarAuthorized && calendar.saveCount == 2)
         print("\n\(passed) workflow checks passed, \(failed) failed. Injected model and calendar only; no network, Keychain or real calendar access.")
         return failed == 0 ? 0 : 1
     }

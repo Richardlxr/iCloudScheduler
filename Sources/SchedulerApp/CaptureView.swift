@@ -11,6 +11,9 @@ struct CaptureView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if CommandLine.arguments.contains("--review-fixture") {
+                Text("隔离测试 · 不会写入真实日历").font(.headline).foregroundStyle(.orange).padding(10)
+            }
             if let message = model.errorMessage { Notice(message: message, dismiss: { model.errorMessage = nil }).padding(.horizontal, 16).padding(.bottom, 8) }
             switch model.stage {
             case .input: input

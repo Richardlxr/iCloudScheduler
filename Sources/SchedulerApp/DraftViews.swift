@@ -8,60 +8,85 @@ struct DraftReviewView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack { Text("\(model.drafts.count) 项安排"); Spacer(); Text(model.preferences.timeZone) }.font(.caption).foregroundStyle(.secondary)
-                    if model.isDemo { Notice(message: "这是界面示例，不会写入日历。返回输入即可使用真实模型或手动填写。") }
-                    ForEach(model.questions, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
-                    if model.drafts.isEmpty { ContentUnavailableView("没有可添加的日程", systemImage: "calendar.badge.questionmark", description: Text("补充具体安排后重新分析，或手动填写。")) }
+                    if !model.questions.isEmpty {
+                        Text(model.questions.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    if model.drafts.isEmpty { ContentUnavailableView("没有可添加的日程", systemImage: "calendar.badge.questionmark", description: Text("返回输入，补充具体安排。")) }
                     ForEach($model.drafts) { $draft in
-                        VStack(alignment: .leading, spacing: 9) {
+                        VStack(alignment: .leading, spacing: 11) {
                             HStack(alignment: .top, spacing: 10) {
-                                Toggle("选择 \(draft.event.title)", isOn: $draft.selected).labelsHidden().toggleStyle(.checkbox)
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(draft.event.title).font(.system(size: 14, weight: .semibold))
-                                    Text(displayTime(draft.event)).font(.caption).foregroundStyle(Color.accentColor)
-                                    HStack(spacing: 9) {
+                                if model.drafts.count > 1 || !draft.selected { Toggle("选择 \(draft.event.title)", isOn: $draft.selected).labelsHidden().toggleStyle(.checkbox) }
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text(draft.event.title).font(.system(size: 16, weight: .semibold))
+                                    Text(displayTime(draft.event)).font(.system(size: 13, weight: .medium))
+                                    HStack(spacing: 10) {
                                         if !draft.event.location.isEmpty { Label(draft.event.location, systemImage: "mappin.and.ellipse") }
-                                        if let reminder = draft.event.reminderMinutes { Label("提前 \(reminder) 分钟", systemImage: "bell") }
+                                        if draft.event.allDay { Label("全天提醒按设置", systemImage: "bell") }
+                                        else if let reminder = draft.event.reminderMinutes { Label("提前 \(reminder) 分钟", systemImage: "bell") }
                                         else { Text("不提醒") }
-                                    }.font(.system(size: 10)).foregroundStyle(.secondary)
-                                    Text(model.calendars.first { $0.id == draft.calendarID }?.displayName ?? "尚未选择日历").font(.caption2).foregroundStyle(.secondary)
+                                    }.font(.caption).foregroundStyle(.secondary)
+                                    Text(model.calendars.first { $0.id == draft.calendarID }?.displayName ?? "尚未选择日历").font(.caption).foregroundStyle(.secondary)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
-                                Button { model.editingID = draft.id } label: { Image(systemName: "pencil") }.buttonStyle(.plain).help("编辑日程")
+                                Button("编辑") { model.editingID = draft.id; model.resizePanel?() }.buttonStyle(.borderless)
                             }
-                            let errors = DraftValidator.errors(draft)
-                            if !errors.isEmpty { Text(errors.joined(separator: "\n")).font(.caption).foregroundStyle(.orange) }
                             if !draft.conflicts.isEmpty {
-                                Text("冲突：" + draft.conflicts.joined(separator: "、")).font(.caption).foregroundStyle(.secondary)
-                                Toggle("仍按这个时间添加", isOn: $draft.conflictAcknowledged).font(.caption)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Label("时间冲突", systemImage: "exclamationmark.triangle.fill").font(.system(size: 12, weight: .semibold))
+                                    Text(draft.conflicts.joined(separator: "、")).font(.caption)
+                                }.foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10).background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
+                            }
+                            let notes = DraftValidator.reviewNotes(draft)
+                            if !notes.isEmpty {
+                                Text(notes.joined(separator: "\n")).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            let errors = DraftValidator.errorsAfterReview(draft)
+                            if !errors.isEmpty {
+                                Text(errors.joined(separator: "\n")).font(.caption).foregroundStyle(.orange)
                             }
                             if model.editingID == draft.id {
                                 Divider()
                                 DraftEditor(draft: draft, calendars: model.calendars, save: { value in
                                     if let i = model.drafts.firstIndex(where: { $0.id == value.id }) { model.drafts[i] = value }
-                                    model.editingID = nil; model.refreshConflicts(); model.persistDraft()
-                                }, cancel: { model.editingID = nil })
+                                    model.editingID = nil; model.refreshConflicts(); model.persistDraft(); model.resizePanel?()
+                                }, cancel: { model.editingID = nil; model.resizePanel?() })
                             }
-                        }.padding(13).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary))
+                        }.padding(15).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(draft.conflicts.isEmpty ? Color.gray.opacity(0.18) : Color.orange.opacity(0.35)))
                     }
                     if !model.calendarAuthorized && !model.isDemo {
-                        Button("允许日历访问，以选择目标日历") { model.settingsPage = .calendar; model.showSettings?() }.font(.caption)
+                        Button("允许日历访问") { model.authorizeCalendar() }.font(.caption)
                     }
                     DisclosureGroup("查看原始内容") { Text(model.text).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.font(.caption).foregroundStyle(.secondary)
-                }.padding(.horizontal, 17).padding(.bottom, 17)
+                }.padding(.horizontal, 16).padding(.bottom, 14)
             }
             Divider()
-            HStack {
-                Button("添加一项") { model.addManual() }.buttonStyle(.plain).font(.caption)
+            HStack(spacing: 12) {
+                Button(role: .destructive) { model.deleteSelectedDrafts() } label: {
+                    Label(model.selectedDrafts.count > 1 ? "删除 \(model.selectedDrafts.count) 项" : "删除", systemImage: "trash")
+                        .frame(minWidth: 65)
+                }.buttonStyle(.bordered).help("删除选中的待添加草稿，已有日历事件不受影响")
+                    .disabled(model.writing || model.selectedDrafts.isEmpty)
                 Spacer()
-                Button(model.writing ? "正在添加…" : "添加 \(model.selectedDrafts.count) 项到日历") { model.writeSelected() }
-                    .buttonStyle(.borderedProminent).disabled(!model.canWrite).keyboardShortcut(.return, modifiers: .command)
-            }.padding(13)
+                Button(model.reviewActionTitle) { model.confirmAndWriteSelected() }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .disabled(model.isDemo || model.writing || model.editingID != nil || model.selectedDrafts.isEmpty)
+                    .keyboardShortcut(.return, modifiers: .command)
+            }.padding(14)
         }
     }
     private func displayTime(_ event: ExtractedEvent) -> String {
         guard let start = event.startLocal, let end = event.endLocal else { return "需要补充时间" }
-        if event.allDay { return "\(start) → \(end)（结束日不包含）· 全天" }
-        return start.replacingOccurrences(of: "T", with: " ").prefix(16) + " → " + end.replacingOccurrences(of: "T", with: " ").prefix(16)
+        if event.allDay {
+            if let interval = try? Temporal.interval(event) {
+                let lastDay = Temporal.format(interval.end.addingTimeInterval(-1), timeZone: event.timeZone, allDay: true)
+                return start == lastDay ? "\(start) · 全天" : "\(start) → \(lastDay) · 全天"
+            }
+            return "\(start) → \(end) · 全天"
+        }
+        let startDay = String(start.prefix(10)), endDay = String(end.prefix(10))
+        let startClock = String(start.dropFirst(11).prefix(5)), endClock = String(end.dropFirst(11).prefix(5))
+        return startDay == endDay ? "\(startDay)  \(startClock) – \(endClock)" : "\(startDay) \(startClock) → \(endDay) \(endClock)"
     }
 }
 
@@ -107,7 +132,6 @@ struct DraftEditor: View {
             }.font(.caption)
             if !value.event.source.isEmpty { Text("来源：\(value.event.source)").font(.caption2).foregroundStyle(.secondary).textSelection(.enabled) }
             if !value.event.assumptions.isEmpty { Text(value.event.assumptions.joined(separator: "\n")).font(.caption).foregroundStyle(.orange) }
-            Toggle("已核对原文，并补全缺失信息", isOn: $value.reviewed).font(.caption)
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.red) }
             HStack { Spacer(); Button("取消", action: cancel); Button("完成") { commit() }.buttonStyle(.borderedProminent) }
         }.textFieldStyle(.roundedBorder)
@@ -119,7 +143,7 @@ struct DraftEditor: View {
         var next = value
         next.event.startLocal = value.event.allDay ? startDay : startDay + "T" + startClock + ":00"
         next.event.endLocal = value.event.allDay ? endDay : endDay + "T" + endClock + ":00"
-        if next.reviewed { next.event.missing = [] }
+        next.reviewed = true; next.event.missing = []
         next.conflicts = []; next.conflictAcknowledged = false
         let errors = DraftValidator.errors(next, requireCalendar: false)
         guard errors.isEmpty else { message = errors.joined(separator: "\n"); return }

@@ -22,7 +22,7 @@ struct AppSettingsView: View {
                     Text(model.settingsPage.rawValue).font(.system(size: 21, weight: .semibold))
                     if let message = model.errorMessage { Notice(message: message, dismiss: { model.errorMessage = nil }) }
                     switch model.settingsPage {
-                    case .models: ModelSettingsView(model: model)
+                    case .models: ModelSettingsView(model: model).onAppear { model.selectProvider(model.selectedPreset) }
                     case .calendar: CalendarSettingsView(model: model)
                     case .general: GeneralSettingsView(model: model)
                     case .privacy: privacy
