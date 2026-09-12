@@ -1,0 +1,17 @@
+name: macOS checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline core checks
+        run: swift run SchedulerChecks
+      - name: Build local application
+        run: ./scripts/build-app.sh release
+      - name: Offline native storage and attachment checks
+        run: ./dist/iCloudScheduler.app/Contents/MacOS/iCloudScheduler --self-check
+      - name: Offline background workflow checks
+        run: ./dist/iCloudScheduler.app/Contents/MacOS/iCloudScheduler --workflow-check

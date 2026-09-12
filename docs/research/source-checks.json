@@ -1,0 +1,79 @@
+{
+  "checked_at_utc": "2026-09-12T06:18:51.829885+00:00",
+  "scope": "Public documentation fetched directly. Hashes identify retrieved bytes; no authenticated inference performed. Source content is not archived.",
+  "cc_switch_commit": "d695a2d77fd9081eafd3e9eedcbf2a97b3410928",
+  "sources": [
+    {
+      "title": "DeepSeek first API call",
+      "requested_url": "https://api-docs.deepseek.com/",
+      "resolved_url": "https://api-docs.deepseek.com/",
+      "http_status": 200,
+      "content_type": "text/html",
+      "bytes": 46116,
+      "sha256": "6e2eb037db92ebef6a8f6408d87c12318c973388d6e27321606bb0e67dd67a6c"
+    },
+    {
+      "title": "DeepSeek vision",
+      "requested_url": "https://api-docs.deepseek.com/guides/vision/",
+      "resolved_url": "https://api-docs.deepseek.com/guides/vision/",
+      "http_status": 200,
+      "content_type": "text/html",
+      "bytes": 78192,
+      "sha256": "d6797f08bdb139e486e9cdd846003c14d3598254a76adbc932c3217be7a2b0df"
+    },
+    {
+      "title": "MiniMax OpenAI compatibility",
+      "requested_url": "https://platform.minimax.cn/docs/api-reference/text-openai-api",
+      "resolved_url": "https://platform.minimax.cn/docs/api-reference/text-openai-api",
+      "http_status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "bytes": 668188,
+      "sha256": "8e62dab70e7c3f780ba6e7777847dbf62d46e68c81f64f7bdf2b1a6855748bf5"
+    },
+    {
+      "title": "Kimi models",
+      "requested_url": "https://platform.kimi.com/docs/models.md",
+      "resolved_url": "https://platform.kimi.com/docs/models.md",
+      "http_status": 200,
+      "content_type": "text/markdown; charset=utf-8",
+      "bytes": 3598,
+      "sha256": "cc4b3606b96d40ba4957eec6f2ba8d3a273b14b5b5eb39f4c3fef28c64114e27"
+    },
+    {
+      "title": "Kimi output format",
+      "requested_url": "https://platform.kimi.com/docs/guide/response_format.md",
+      "resolved_url": "https://platform.kimi.com/docs/guide/response_format.md",
+      "http_status": 200,
+      "content_type": "text/markdown; charset=utf-8",
+      "bytes": 14102,
+      "sha256": "b108e2ddd09b0712ac7c3ff128fd13261b69052dc67e66ac9f061eeebd5d2121"
+    },
+    {
+      "title": "Zhipu GLM 5.3 Flash",
+      "requested_url": "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash.md",
+      "resolved_url": "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash.md",
+      "http_status": 200,
+      "content_type": "text/markdown; charset=utf-8",
+      "bytes": 20420,
+      "sha256": "5e1bbe1ccc790aacc737e348e30f0a7920f5f912d1fcfb702cd157226a8c8e52"
+    },
+    {
+      "title": "Qwen OpenAI compatibility",
+      "requested_url": "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope",
+      "resolved_url": "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope",
+      "http_status": 200,
+      "content_type": "text/html;charset=UTF-8",
+      "bytes": 159785,
+      "sha256": "cede5ae1ebf5e163884864f1121e804e109bc25dc3448e013024a06b1180dfe4"
+    },
+    {
+      "title": "Xiaomi image understanding",
+      "requested_url": "https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/image-understanding",
+      "resolved_url": "https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/image-understanding",
+      "http_status": 200,
+      "content_type": "text/html",
+      "bytes": 406423,
+      "sha256": "10f726f61e007a631b9dd3b48a6e1e7285a293047f322d7f42e8154bfea1c4e4"
+    }
+  ]
+}

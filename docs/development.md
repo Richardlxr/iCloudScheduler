@@ -1,0 +1,86 @@
+# 开发与验证说明
+
+## 工程结构
+
+Swift Package 最低部署目标 macOS 14。SwiftUI 放在 NSHostingView 中，生命周期、菜单栏和 NSPanel 使用 AppKit；可在 Xcode 打开 Package.swift，也可仅用 CLT 构建 `.app`。
+
+| 目录 | 内容 |
+| --- | --- |
+| Sources/SchedulerCore | 领域对象、JSON 契约、日期/时区校验、预设、HTTP 传输与模型能力测试 |
+| Sources/SchedulerApp | 窗口、设置、附件、EventKit、SQLite 日志和 Keychain |
+| Sources/SchedulerChecks | 不访问网络和真实日历的核心回归检查 |
+| Resources | 应用标识、权限用途说明与 entitlements |
+| scripts/build-app.sh | Release/Debug 构建、`.app` 打包与本机签名 |
+
+本机使用 Apple Silicon、Swift 6.4 Command Line Tools。SDK 新增同名 `State` 宏，代码用 `ViewState<Value>` 别名显式选择 `SwiftUI.State` 属性包装器，无需缺失的 SwiftUI 宏插件。
+
+## 输入与 UI
+
+呼出小窗宽 480 pt，输入约 285 pt 高（有附件时为 410 pt），审核约 610 pt 高，受屏幕可用高度限制。设置窗口默认 740 × 630 pt。模型表单、日程编辑、权限与提醒均为原生控件。底部模型菜单列出已保存密钥的配置，当前项显示勾选；切换会保存选择并保留输入。启动时只查询钥匙串条目元数据判断已配置状态，不为菜单读取密钥内容。
+
+支持文件选择、拖放及输入框粘贴图片。附件只在本次运行的内存中保存，不在重启后自动读取原始文件。ImageIO 规范图像方向并重新编码 JPEG，PDFKit 按选定页码渲染图像；没有本地 OCR。文件限 20 MB、最多 5 个附件，合计 10 张图片/页面、12 MB 编码图像与 2 万字。
+
+菜单栏提供输入、近期记录、设置和退出。Carbon 全局快捷键注册冲突时保留原配置；输入框支持 Enter 换行、⌘Enter 分析，中文组词时不截获提交。Esc 收起并保留草稿。写入开始后，隐藏不会撤销已开始的操作。
+
+现支持在通用设置中切换 Enter / ⌘Enter 提交；Shift Enter 始终换行，中文组词时不提交。默认仍用 ⌘Enter，默认不自动收起。“提交后后台运行”开启时，仅在请求成功启动后收起。隐藏保持任务运行；使用一次 ProcessInfo 活动声明避免用户任务因 App Nap 被推迟，任务结束即释放，不阻止系统睡眠、不使用后台轮询。
+
+位置按左上角坐标存入应用 UserDefaults 的 `capturePanelTopLeft`；程序调整窗口高度时不覆盖用户位置。恢复时检查可用显示器并限制窗口在可见范围内。后台状态显示于菜单栏菜单和悬停提示；失败主动打开输入/结果窗口并显示原生 NSAlert，无须系统通知权限。
+
+“添加前确认”默认开启，旧配置迁移保持此默认值。关闭后仅自动添加整批字段完整、无需确认假设、无未确认冲突且没有追问的结果。提交时快照目标日历与运行模式；前台任务运行中重新开启确认可阻止自动添加，关闭确认不会追溯执行旧草稿。后台提交直接尝试添加，不受前台确认开关影响；只有整批写入并读回核对成功且没有提醒调整才安静结束。冲突、不完整结果、失败、部分成功、结果不确定均主动弹窗。
+
+全天提醒支持当天或提前 1–7 天、任意小时/分钟；旧版 09:00、前一天 18:00、不提醒配置自动映射。以事件时区的日历日期计算，避免把一天固定当成 24 小时。夏令时不存在的自定义时刻会报错，不静默挪动时刻。
+
+## 模型与网络
+
+HTTPS Chat Completions + Bearer；保留 Base URL 的代理前缀，接受完整端点，不接受地址里的凭据、query、fragment、HTTP 或其他协议。
+
+使用 ephemeral URLSession，拒绝重定向、限制响应 2 MB，不输出密钥或上游响应原文。一次分析只请求一次；超时不保证没有计费，用户可自行重试。未知型号不发送假定通用的思考参数。
+
+文本测试使用合成会议检查真实日期、时区和提醒。图片测试用随机验证码，答案只放在图片里。测试由用户点击并可能计费。图片验证通过并不代表 PDF 日程质量已验收。
+
+Key、地址、模型或超时修改都会使旧验证失效。保存 Key 前，先使持久化的旧能力失效，避免中断导致错误显示。Key 写入钥匙串后才更新活动配置。模型仅返回草稿，不拥有日历写入工具。
+
+## 日历可靠性
+
+单个 EKEventStore 在 MainActor 串行访问，框架对象不跨任务传递。用户选择明确的来源和可写日历，不凭名称把 CalDAV 推定为 iCloud。
+
+写入次序：SQLite `prepared` → EventKit 保存 → 读回核对 → `saved` 或 `uncertain`。逐项记录，不宣称批次原子性。应用生成的草稿 ID 与操作 UUID 防止同一草稿在双击或恢复后盲目重建。
+
+事件备注包含操作 UUID 标记。中断操作在“近期记录”核对，先查系统 ID，再在原日期附近查标记。没有查到不代表从未保存，因此不会自动重试创建。
+
+撤销只处理保存时指纹完整、当前字段未改变的普通事件；重新检查唯一性、指纹、权限和重复属性。恢复得到的事件缺少可信原始指纹，要求用户到系统日历处理。撤销中断保留 `undoing`，不自动重试。
+
+自动找空档、重复规则、农历转换尚未实现。提示词要求将此类输入保留为待补全项；模型遵循程度仍需真实评测，不能由代码静态保证。
+
+## 本机存储
+
+目录：`~/Library/Application Support/iCloudScheduler/`。
+
+- `preferences.json`：地址、模型、验证结果和设置，不含 Key。
+- `draft.json`：文字和草稿；只恢复最近 7 天，关闭保留输入会删除本应用的草稿文件。
+- `operations.sqlite` 和 WAL：操作记录，启动时清理超过 30 天的已完成记录，未查明记录继续保留。
+- Keychain generic password，服务标识 `dev.icloudscheduler.app.api-keys`：API Key。
+
+应用数据目录仅当前用户可访问，配置使用原子替换；SQLite 开启 WAL 和 FULL synchronous。没有额外数据库加密，依赖用户的系统磁盘保护。损坏文件保留并报错，不覆盖重建。
+
+## 验证边界
+
+运行 `swift run SchedulerChecks` 做离线核心检查。构建 `.app` 后，在仓库根目录运行 `dist/iCloudScheduler.app/Contents/MacOS/iCloudScheduler --self-check` 检查 SQLite、草稿、图片、PDF 选页/旋转与输入预算。原生测试只使用合成数据，测试数据库和 PDF/图像样本保留在 `dist/validation/native-fixtures/`。它不读取钥匙串、网络或真实日历。原生应用可以通过 `--ui-smoke` 启动，跳过启动时的快捷键注册与钥匙串读取，方便检查界面。
+
+以下需要受控验收，不能由编译成功推断：
+
+1. 六家服务分别使用专用小额测试 Key，验证文本、图片及多页 PDF 日程质量。
+2. 用户手工创建并选择明确的测试日历，添加未来事件，核对字段与提醒。
+3. 权限拒绝、撤销、目标日历删除/只读、离线和部分失败，均不得丢失输入。
+4. 第二设备看到同一事件；退出应用后观察系统通知，记录专注模式和网络状态。
+5. 外部修改事件后撤销应停止；保存后回执前中断应核对，不自动重建。
+6. 多显示器、全屏、Spaces、Stage Manager、中文候选框、快捷键冲突与登录启动。
+7. 正式 Developer ID 签名、公证、staple、干净机器安装升级与权限连续性。
+
+`SIGNING_IDENTITY` 可指定签名身份，但构建脚本不会公证或发布。当前不是沙箱化公共发行版，也未宣称 Intel 真机、跨设备同步、通知时效和六家付费推理全部通过。
+
+额外运行 `dist/iCloudScheduler.app/Contents/MacOS/iCloudScheduler --workflow-check` 验证实际 AppModel 异步流程。模型请求、钥匙串读取和日历接口均注入合成实现；覆盖手动收起继续生成、提交自动收起、自动写入、重复提交、请求失败、写入异常、不确定读回、权限缺失、取消、配置中途变化以及不完整结果。合成操作记录保存在 `dist/validation/workflow-fixtures/`，不访问真实用户配置。
+
+## Universal 发布构建
+
+`./scripts/build-app.sh release` 默认同时编译 arm64 与 x86_64，并打包为同一 Universal 应用。`./scripts/package-release.sh` 生成 ZIP 和 SHA256SUMS。应用图标为 `Resources/AppIcon.icns`，可通过 `./scripts/build-icon.sh` 从 PNG 源图重新生成。Intel 指令集可在 Apple Silicon 上使用已安装的 Rosetta 进行离线检查，不能据此宣称完成 Intel 真机验收。

@@ -1,0 +1,66 @@
+{
+  "checked_at_utc": "2026-09-12T06:18:09.414518+00:00",
+  "purpose": "Unauthenticated route reachability only. Does not validate API keys, model availability, vision, JSON output, latency or billing. No user data or credentials sent.",
+  "results": [
+    {
+      "provider": "deepseek",
+      "url": "https://api.deepseek.com/chat/completions",
+      "model_candidate": "deepseek-flash",
+      "authentication": "none",
+      "method": "POST",
+      "http_status": 401,
+      "response_excerpt": "Authentication Fails (governor)",
+      "elapsed_ms": 196
+    },
+    {
+      "provider": "minimax",
+      "url": "https://api.minimax.cn/v1/chat/completions",
+      "model_candidate": "MiniMax-M3",
+      "authentication": "none",
+      "method": "POST",
+      "http_status": 401,
+      "response_excerpt": "{\"type\":\"error\",\"error\":{\"type\":\"authorized_error\",\"message\":\"login fail: Please carry the API secret key in the 'Authorization' field of the request header (1004)\",\"http_code\":\"401\"},\"request_id\":\"06f421a1e6565b01ac3171a76b6e6a7a\"}",
+      "elapsed_ms": 135
+    },
+    {
+      "provider": "kimi",
+      "url": "https://api.moonshot.cn/v1/chat/completions",
+      "model_candidate": "kimi-k2.6",
+      "authentication": "none",
+      "method": "POST",
+      "http_status": 401,
+      "response_excerpt": "{\"error\":{\"message\":\"Incorrect API key provided\",\"type\":\"incorrect_api_key_error\"}}",
+      "elapsed_ms": 361
+    },
+    {
+      "provider": "zhipu",
+      "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "model_candidate": "glm-5.3-flash",
+      "authentication": "none",
+      "method": "POST",
+      "http_status": 401,
+      "response_excerpt": "{\"error\":{\"code\":\"1001\",\"message\":\"Header中未收到Authorization参数，无法进行身份验证。\"}}",
+      "elapsed_ms": 104
+    },
+    {
+      "provider": "qwen",
+      "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "model_candidate": "qwen3.8-flash",
+      "authentication": "none",
+      "method": "POST",
+      "http_status": 401,
+      "response_excerpt": "{\"error\":{\"message\":\"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY). \",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null},\"request_id\":\"3718b459-62ed-9dd4-a370-e31eb47f84e2\"}",
+      "elapsed_ms": 162
+    },
+    {
+      "provider": "xiaomi",
+      "url": "https://api.xiaomimimo.com/v1/chat/completions",
+      "model_candidate": "mimo-v2.5",
+      "authentication": "none",
+      "method": "POST",
+      "http_status": 401,
+      "response_excerpt": "{\n    \"error\": {\n        \"message\": \"Invalid API Key\",\n        \"param\": \"Please provide valid API Key\",\n        \"code\": \"401\",\n        \"type\": \"invalid_key\"\n    }\n}\n",
+      "elapsed_ms": 217
+    }
+  ]
+}

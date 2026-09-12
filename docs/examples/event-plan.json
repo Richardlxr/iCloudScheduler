@@ -1,0 +1,115 @@
+{
+  "exampleOnly": true,
+  "schemaVersion": "0.1-design",
+  "description": "设计示例：上下文和内部状态由应用创建，模型只返回 extraction。该文件不能直接用于日历写入。",
+  "appContext": {
+    "referenceNow": "2026-09-12T10:00:00+08:00",
+    "timeZone": "Asia/Shanghai",
+    "locale": "zh-Hans-CN",
+    "weekStartsOn": "monday",
+    "inputBundleId": "demo-input-01",
+    "sources": [
+      {
+        "id": "text-01",
+        "kind": "text",
+        "text": "2026年9月14日下午三点到四点组会，提前10分钟提醒。本周找一个小时准备演讲，晚上七点到九点都可以。"
+      }
+    ]
+  },
+  "extraction": {
+    "items": [
+      {
+        "clientRef": "item-1",
+        "kind": "fixed_event",
+        "title": "组会",
+        "temporal": {
+          "type": "timed",
+          "startLocal": "2026-09-14T15:00:00",
+          "endLocal": "2026-09-14T16:00:00",
+          "timeZone": "Asia/Shanghai"
+        },
+        "alarmRequests": [
+          {
+            "kind": "relative_to_start",
+            "offsetSeconds": -600,
+            "origin": "source"
+          }
+        ],
+        "recurrence": null,
+        "location": null,
+        "notes": null,
+        "sourceRefs": [
+          {
+            "sourceId": "text-01",
+            "page": null,
+            "quote": "2026年9月14日下午三点到四点组会，提前10分钟提醒"
+          }
+        ],
+        "missingFields": [],
+        "assumptions": [
+          {
+            "field": "temporal.timeZone",
+            "reason": "来源未明确时区，采用本次输入上下文的 Asia/Shanghai，审核时可修改"
+          }
+        ]
+      },
+      {
+        "clientRef": "item-2",
+        "kind": "flexible_task",
+        "title": "准备演讲",
+        "durationMinutes": 60,
+        "earliestStart": "2026-09-12T10:00:00+08:00",
+        "deadlineExclusive": "2026-09-14T00:00:00+08:00",
+        "timeZone": "Asia/Shanghai",
+        "preferredLocalWindows": [
+          {
+            "startTime": "19:00:00",
+            "endTime": "21:00:00"
+          }
+        ],
+        "priority": "normal",
+        "splittable": false,
+        "sourceRefs": [
+          {
+            "sourceId": "text-01",
+            "page": null,
+            "quote": "本周找一个小时准备演讲，晚上七点到九点都可以"
+          }
+        ],
+        "missingFields": [],
+        "assumptions": [
+          {
+            "field": "deadlineExclusive",
+            "reason": "按上下文约定周一为一周起点，本周截止解释为周一零点之前"
+          },
+          {
+            "field": "priority",
+            "reason": "未指定优先级，采用 normal"
+          },
+          {
+            "field": "splittable",
+            "reason": "首版默认连续完成，不自动拆分"
+          }
+        ]
+      }
+    ],
+    "clarifications": []
+  },
+  "appOwnedState": {
+    "draftRevision": 1,
+    "selectedCalendarIdentifier": null,
+    "permissionState": "not_checked",
+    "conflictCheckState": "not_run",
+    "flexibleTaskAllocationState": "not_run",
+    "userApproval": "pending",
+    "writeState": "not_started",
+    "invariants": [
+      "模型不能设置权限、目标日历标识、批准状态或操作标识",
+      "本地代码必须再次校验模型解析的日期和时区",
+      "选中目标日历、完成校验并由用户确认当前 revision 之后才能写入",
+      "flexible_task 必须先经本地空档分配成为定时草稿，再进入审核",
+      "sourceRefs.quote 必须能够在对应来源中定位；图片来源需要有效页码或区域引用",
+      "来源时间缺失和歧义必须保留，不能仅因 JSON 格式正确就允许提交"
+    ]
+  }
+}
