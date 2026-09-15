@@ -15,7 +15,7 @@
 
 ## 下载与安装
 
-前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.3.0-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
+前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.3.1-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
 
 当前下载包使用 ad-hoc 签名，尚未通过 Apple Developer ID 签名与公证，macOS 可能阻止首次打开；更新后可能需要重新授权日历和钥匙串。也可按下面的步骤从源码构建；一个 Universal 安装包同时包含 arm64 与 x86_64 两种架构。
 

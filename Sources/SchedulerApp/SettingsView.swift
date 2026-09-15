@@ -12,8 +12,13 @@ struct AppSettingsView: View {
                     .font(.system(size: 15, weight: .semibold)).padding(.horizontal, 9).padding(.top, 8).padding(.bottom, 17)
                 ForEach(SettingsPage.allCases) { page in
                     Button { model.settingsPage = page } label: {
-                        Label(page.rawValue, systemImage: page.icon).font(.system(size: 13, weight: model.settingsPage == page ? .semibold : .regular)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 9).padding(.horizontal, 9)
+                        Label(page.rawValue, systemImage: page.icon)
+                            .font(.system(size: 13, weight: model.settingsPage == page ? .semibold : .regular))
+                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                            .padding(.horizontal, 9)
                             .background(model.settingsPage == page ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                            // Plain buttons must include the padded row, not only the label glyphs.
+                            .contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(model.settingsPage == page ? Color.accentColor : .primary)
                 }
                 Spacer()
