@@ -8,15 +8,17 @@ struct AppSettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
+                Label("设置", systemImage: "slider.horizontal.3")
+                    .font(.system(size: 15, weight: .semibold)).padding(.horizontal, 9).padding(.top, 8).padding(.bottom, 17)
                 ForEach(SettingsPage.allCases) { page in
                     Button { model.settingsPage = page } label: {
-                        Label(page.rawValue, systemImage: page.icon).font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7).padding(.horizontal, 9)
+                        Label(page.rawValue, systemImage: page.icon).font(.system(size: 13, weight: model.settingsPage == page ? .semibold : .regular)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 9).padding(.horizontal, 9)
                             .background(model.settingsPage == page ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 7))
                     }.buttonStyle(.plain).foregroundStyle(model.settingsPage == page ? Color.accentColor : .primary)
                 }
                 Spacer()
                 Text("iCloudScheduler\n\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0")").font(.system(size: 10)).foregroundStyle(.secondary).padding(9)
-            }.padding(10).frame(width: 155).background(.quaternary.opacity(0.35))
+            }.padding(12).frame(width: 164).background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -32,10 +34,11 @@ struct AppSettingsView: View {
                     case .privacy: privacy
                     case .updates: UpdateSettingsView(updater: updater)
                     }
-                }.padding(25).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(26).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.frame(minWidth: 710, idealWidth: 740, maxWidth: .infinity, minHeight: 550, idealHeight: 630, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .groupBoxStyle(SettingsCardStyle())
     }
     private var privacy: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -215,6 +218,9 @@ struct GeneralSettingsView: View {
             GroupBox("启动") {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: model.setLogin))
+                    Text("登录后静默运行；点击应用或按快捷键打开窗口。").font(.caption).foregroundStyle(.secondary)
+                    Toggle("显示菜单栏图标", isOn: $model.preferences.showMenuBar)
+                        .onChange(of: model.preferences.showMenuBar) { _, _ in model.persistPreferences() }
                     Toggle("保留未完成的输入", isOn: $model.preferences.keepDraft)
                         .onChange(of: model.preferences.keepDraft) { _, _ in model.persistPreferences(); model.persistDraft() }
                 }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
@@ -224,7 +230,7 @@ struct GeneralSettingsView: View {
                     Text("跟随系统").tag("system"); Text("浅色").tag("light"); Text("深色").tag("dark")
                 }.padding(8).onChange(of: model.preferences.appearance) { _, _ in model.persistPreferences() }
             }
-            Text("快捷键如已被其他应用占用，会保留原快捷键并提示。菜单栏入口始终可用。").font(.caption).foregroundStyle(.secondary)
+            Text("快捷键如已被其他应用占用，会保留原快捷键并提示。隐藏菜单栏图标后，仍可按快捷键或从 Finder 打开应用；⌘ , 打开设置，⌘ Q 退出。").font(.caption).foregroundStyle(.secondary)
         }
     }
 }

@@ -42,25 +42,34 @@ struct CaptureView: View {
     private var header: some View {
         HStack(spacing: 9) {
             if model.stage == .review || model.stage == .history || model.stage == .receipt {
-                Button { model.setStage(.input) } label: { Image(systemName: "arrow.left") }.buttonStyle(.plain).help("返回输入")
-            } else { Image(systemName: "calendar.badge.plus").foregroundStyle(Color.accentColor) }
-            Text(title).font(.system(size: 13, weight: .semibold))
+                Button { model.setStage(.input) } label: { Image(systemName: "arrow.left") }.buttonStyle(ToolbarIconStyle()).help("返回输入").accessibilityLabel("返回输入").disabled(model.isGenerating)
+            } else { Image(systemName: "calendar.badge.plus").font(.system(size: 15, weight: .medium)).foregroundStyle(Color.accentColor)
+                .frame(width: 30, height: 30).background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 9)) }
+            Text(title).font(.system(size: 14, weight: .semibold))
             if model.isDemo { Text("界面示例").font(.caption2).foregroundStyle(.secondary) }
             Spacer()
-            Button { model.setStage(.history) } label: { Image(systemName: "clock.arrow.circlepath") }.buttonStyle(.plain).help("近期记录")
-            Button { model.showSettings?() } label: { Image(systemName: "slider.horizontal.3") }.buttonStyle(.plain).help("设置 ⌘,")
-            Button { model.persistDraft(); model.hidePanel?() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("收起 Esc")
-        }.padding(.horizontal, 17).padding(.vertical, 15)
+            Button { model.setStage(.history) } label: { Image(systemName: "clock.arrow.circlepath") }.buttonStyle(ToolbarIconStyle()).help("近期记录").accessibilityLabel("近期记录").disabled(model.isGenerating)
+            Button { model.showSettings?() } label: { Image(systemName: "slider.horizontal.3") }.buttonStyle(ToolbarIconStyle()).help("设置 ⌘,").accessibilityLabel("设置")
+            Button { model.persistDraft(); model.hidePanel?() } label: { Image(systemName: "xmark") }.buttonStyle(ToolbarIconStyle()).help("收起 Esc").accessibilityLabel("收起窗口")
+        }.padding(.horizontal, 16).padding(.vertical, 12)
     }
     private var input: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 13) {
-                    TextInput(text: $model.text, enterSubmits: model.preferences.enterSubmits, commit: { model.analyze() }, hide: { model.persistDraft(); model.hidePanel?() }, imagePaste: model.addPastedImage)
-                        .overlay(alignment: .topLeading) {
-                            if model.text.isEmpty { Text("有什么安排？\n粘贴消息，或拖入图片、PDF。")
-                                .font(.system(size: 16)).foregroundStyle(.tertiary).padding(.top, 7).padding(.leading, 4).allowsHitTesting(false) }
-                        }.frame(height: 130)
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextInput(text: $model.text, enterSubmits: model.preferences.enterSubmits, commit: { model.analyze() }, hide: { model.persistDraft(); model.hidePanel?() }, imagePaste: model.addPastedImage)
+                            .overlay(alignment: .topLeading) {
+                                if model.text.isEmpty { Text("有什么安排？\n粘贴消息，或拖入图片、PDF。")
+                                    .font(.system(size: 16)).foregroundStyle(.secondary).padding(.top, 7).padding(.leading, 4).allowsHitTesting(false) }
+                            }.frame(height: 126)
+                        HStack {
+                            Button { model.chooseFiles() } label: { Label("添加附件", systemImage: "paperclip") }
+                                .buttonStyle(.borderless).help("添加图片或 PDF")
+                            Spacer()
+                            Text("文字 · 图片 · PDF").foregroundStyle(.secondary)
+                        }.font(.caption)
+                    }.padding(14).appCard()
                     ForEach($model.attachments) { $attachment in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
@@ -81,14 +90,10 @@ struct CaptureView: View {
                                     Text("最多 10 页").font(.caption2).foregroundStyle(.secondary)
                                 }.textFieldStyle(.roundedBorder)
                             }
-                        }.padding(10).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 9))
+                        }.padding(12).appCard(radius: 10)
                     }
-                }.padding(.horizontal, 20).padding(.bottom, 8)
+                }.padding(.horizontal, 16).padding(.bottom, 14)
             }
-            HStack {
-                Button { model.chooseFiles() } label: { Label("添加附件", systemImage: "paperclip") }.buttonStyle(.plain)
-                Spacer()
-            }.font(.caption).padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             HStack(spacing: 8) {
                 Menu {
@@ -114,7 +119,7 @@ struct CaptureView: View {
                 .onChange(of: model.preferences.calendarID) { _, _ in model.persistPreferences() }
                 Spacer(minLength: 0)
                 Button(model.preferences.enterSubmits ? "生成日程 ↵" : "生成日程 ⌘↵") { model.analyze() }.buttonStyle(.borderedProminent).disabled(!model.canAnalyze)
-            }.font(.caption).padding(13).background(.quaternary.opacity(0.2))
+            }.font(.caption).controlSize(.regular).padding(.horizontal, 16).padding(.vertical, 13).background(AppStyle.surface)
         }
     }
     private var progress: some View {
@@ -134,7 +139,7 @@ struct Notice: View {
             Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
             Text(message).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             if let dismiss { Button(action: dismiss) { Image(systemName: "xmark") }.buttonStyle(.plain) }
-        }.padding(10).background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+        }.padding(12).background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

@@ -19,7 +19,7 @@ enum ModelContractChecks {
                     throw AppError("样本 \(index + 1) 未通过字段/可选信息约束。")
                 }
                 if index == 0 {
-                    guard event.startLocal == "2026-09-14T20:00:00", event.endLocal == "2026-09-14T21:00:00", event.timeZone == "Asia/Shanghai",
+                    guard event.startLocal == "2026-09-14T20:00:00", event.endLocal == nil, event.timeZone == "Asia/Shanghai",
                           event.reminderMinutes == 60, event.missing.isEmpty, event.assumptions.isEmpty else {
                         throw AppError("明确日程仍存在错误时间、默认值或多余追问。")
                     }

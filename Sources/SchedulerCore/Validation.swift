@@ -36,8 +36,11 @@ public enum Temporal {
     }
 
     public static func interval(_ event: ExtractedEvent) throws -> DateInterval {
-        guard let start = event.startLocal, let end = event.endLocal else { throw AppError("请补充开始和结束时间。") }
+        guard let start = event.startLocal else { throw AppError("请补充开始时间。") }
         let startDate = try parse(start, timeZone: event.timeZone, allDay: event.allDay)
+        // EventKit needs an end date; point reminders occupy one minute and are marked free.
+        if event.isPointReminder { return DateInterval(start: startDate, duration: 60) }
+        guard let end = event.endLocal else { throw AppError("请补充全天结束日期。") }
         let endDate = try parse(end, timeZone: event.timeZone, allDay: event.allDay)
         guard endDate > startDate else { throw AppError("结束时间必须晚于开始时间；全天结束日不包含在日程内。") }
         guard endDate.timeIntervalSince(startDate) <= 366 * 86400 else { throw AppError("单条日程不能超过一年。") }

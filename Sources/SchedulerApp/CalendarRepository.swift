@@ -33,7 +33,7 @@ final class CalendarRepository: CalendarAccess {
         return calendar
     }
     func conflicts(for draft: Draft) throws -> [String] {
-        guard hasAccess else { return [] }
+        guard hasAccess, !draft.event.isPointReminder else { return [] }
         let interval = try Temporal.interval(draft.event)
         let predicate = store.predicateForEvents(withStart: interval.start, end: interval.end, calendars: nil)
         return store.events(matching: predicate).filter {
@@ -49,6 +49,7 @@ final class CalendarRepository: CalendarAccess {
         let event = EKEvent(eventStore: store)
         event.calendar = target; event.title = draft.event.title
         event.startDate = interval.start; event.endDate = interval.end
+        if draft.event.isPointReminder { event.availability = .free }
         event.timeZone = TimeZone(identifier: draft.event.timeZone); event.isAllDay = draft.event.allDay
         event.location = draft.event.location
         event.notes = draft.event.notes + (draft.event.notes.isEmpty ? "" : "\n\n") + receipt.marker

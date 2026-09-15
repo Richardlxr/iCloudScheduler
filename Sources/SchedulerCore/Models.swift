@@ -57,6 +57,11 @@ public struct AppPreferences: Codable, Sendable {
     public var submitWithEnter: Bool?
     public var hideAfterSubmit: Bool?
     public var customAllDayReminder: AllDayReminder?
+    public var menuBarVisible: Bool?
+    public var showMenuBar: Bool {
+        get { menuBarVisible ?? true }
+        set { menuBarVisible = newValue }
+    }
     public var enterSubmits: Bool {
         get { submitWithEnter ?? false }
         set { submitWithEnter = newValue }
@@ -111,6 +116,10 @@ public struct ExtractedEvent: Codable, Equatable, Sendable {
         self.reminderMinutes = reminderMinutes; self.missing = missing
         self.assumptions = assumptions; self.source = source
     }
+}
+
+extension ExtractedEvent {
+    public var isPointReminder: Bool { !allDay && endLocal == nil }
 }
 
 public struct Extraction: Codable, Sendable {

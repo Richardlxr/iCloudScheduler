@@ -223,6 +223,42 @@ enum WorkflowChecks {
         } catch { check("update persists and restores unfinished text", false) }
         updateModel.preferences.keepDraft = false; updateModel.text = ""; updateModel.drafts = []
         check("idle update respects disabled draft retention", !restartRejected())
+        for scenario in ["success", "failure", "cancel", "multiple", "missing", "emptyInput", "reset"] {
+            let request = FixtureRequest(), calendar = FixtureCalendar()
+            var capturedInput = ""
+            let model = AppModel(directory: root.appendingPathComponent("refine-" + scenario), calendar: calendar,
+                readKey: { _ in "fixture" }, extractor: { input, _, _, _, _, _ in
+                    capturedInput = input.text; return try await request.run()
+                }, integrateSystem: false)
+            let original = Draft(event: .init(title: "待补充安排", timeZone: "Asia/Shanghai", missing: ["具体时间"]), calendarID: "fixture-calendar")
+            let other = Draft(event: .init(title: "无关安排", startLocal: "2035-06-19T14:00:00", endLocal: "2035-06-19T15:00:00", timeZone: "Asia/Shanghai"), calendarID: "other-calendar")
+            model.drafts = [original, other]; model.text = "两条原始安排"; model.stage = .review
+            model.preferences.runInBackground = true; model.preferences.confirmBeforeAdding = false
+            if scenario == "failure" { request.error = URLError(.timedOut) }
+            if scenario == "multiple" { request.response.events.append(request.response.events[0]) }
+            if scenario == "missing" { request.response.events[0].startLocal = nil; request.response.events[0].missing = ["日期"] }
+            if scenario == "emptyInput" { model.drafts = []; model.questions = ["请补充安排"] }
+            model.refineDraft(scenario == "emptyInput" ? nil : original.id, instruction: "2035年6月18日下午2点提醒我")
+            await settle { request.gate != nil }
+            check("refinement blocks writes while active \(scenario)", model.isGenerating && !model.canWrite)
+            if scenario == "cancel" { model.cancelAnalysis() }
+            if scenario == "reset" { model.resetInput() }
+            request.finish(); await settle { !model.isGenerating }; await Task.yield()
+            check("refinement never writes automatically \(scenario)", calendar.saveCount == 0)
+            if scenario == "reset" {
+                check("reset discards stale refinement response", model.drafts.isEmpty && model.text.isEmpty && model.stage == .input)
+            } else if scenario == "emptyInput" {
+                check("empty extraction can be completed in place", model.drafts.count == 1 && model.questions.isEmpty && model.stage == .review)
+            } else {
+                check("refinement preserves unrelated draft and excludes it from model context \(scenario)", model.drafts[1] == other && !capturedInput.contains("无关安排"))
+                if ["failure", "cancel", "multiple"].contains(scenario) {
+                    check("unsuccessful refinement retains original \(scenario)", model.drafts[0] == original && model.stage == .review)
+                } else {
+                    check("refinement preserves draft identity and destination \(scenario)", model.drafts[0].id == original.id && model.drafts[0].calendarID == original.calendarID && !model.drafts[0].reviewed)
+                    if scenario == "missing" { check("unresolved refinement remains blocked", !model.canWrite) }
+                }
+            }
+        }
         print("\n\(passed) workflow checks passed, \(failed) failed. Injected model and calendar only; no network, Keychain or real calendar access.")
         return failed == 0 ? 0 : 1
     }

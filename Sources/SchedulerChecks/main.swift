@@ -14,6 +14,26 @@ let draft = Draft(event: event, calendarID: "test-only")
 let now = Date(timeIntervalSince1970: 1893456000)
 
 check("valid time interval") { try Temporal.interval(event).duration == 3600 }
+check("start-only reminder is valid and stores one minute") {
+    var reminder = event; reminder.endLocal = nil; reminder.reminderMinutes = 0
+    return try Temporal.interval(reminder).duration == 60 && DraftValidator.errors(Draft(event: reminder, calendarID: "test"), now: now).isEmpty
+}
+check("start-only still rejects invalid dates") {
+    var reminder = event; reminder.endLocal = nil; reminder.startLocal = "2030-02-30T14:00:00"
+    return rejects { _ = try Temporal.interval(reminder) }
+}
+check("explicit end before start is not converted to a reminder") {
+    var reminder = event; reminder.endLocal = "2030-06-18T13:00:00"
+    return rejects { _ = try Temporal.interval(reminder) }
+}
+check("all-day missing end still blocks") {
+    var reminder = event; reminder.allDay = true; reminder.startLocal = "2030-06-18"; reminder.endLocal = nil
+    return rejects { _ = try Temporal.interval(reminder) }
+}
+check("menu bar preference survives relaunch") {
+    var preferences = AppPreferences(); preferences.showMenuBar = false
+    return try !JSONDecoder().decode(AppPreferences.self, from: JSONEncoder().encode(preferences)).showMenuBar
+}
 check("invalid leap day") { rejects { _ = try Temporal.parse("2025-02-29T12:00:00", timeZone: zone, allDay: false) } }
 check("valid leap day") { _ = try Temporal.parse("2028-02-29T12:00:00", timeZone: zone, allDay: false); return true }
 check("invalid month") { rejects { _ = try Temporal.parse("2026-13-01T12:00:00", timeZone: zone, allDay: false) } }
@@ -96,10 +116,10 @@ check("config mutation invalidates all capabilities") { var c = ProviderConfig(p
 check("operation identity is app generated") { OperationReceipt(batchID: UUID(), draft: draft).marker.hasPrefix("[iCloudScheduler:") }
 check("old preferences keep explicit submission and confirmation defaults") {
     var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(AppPreferences())) as! [String: Any]
-    for key in ["confirmationRequired", "submitWithEnter", "hideAfterSubmit", "customAllDayReminder"] { old.removeValue(forKey: key) }
+    for key in ["confirmationRequired", "submitWithEnter", "hideAfterSubmit", "customAllDayReminder", "menuBarVisible"] { old.removeValue(forKey: key) }
     old["activeProvider"] = "minimax"; old["allDayReminderMinutes"] = -360
     let restored = try JSONDecoder().decode(AppPreferences.self, from: JSONSerialization.data(withJSONObject: old))
-    return restored.confirmBeforeAdding && !restored.enterSubmits && !restored.runInBackground && restored.activeProvider == "minimax" && restored.allDayReminder == AllDayReminder(daysBefore: 1, hour: 18)
+    return restored.showMenuBar && restored.confirmBeforeAdding && !restored.enterSubmits && !restored.runInBackground && restored.activeProvider == "minimax" && restored.allDayReminder == AllDayReminder(daysBefore: 1, hour: 18)
 }
 check("new workflow settings and custom reminder survive relaunch") {
     var p = AppPreferences(); p.confirmBeforeAdding = false; p.enterSubmits = true; p.runInBackground = true

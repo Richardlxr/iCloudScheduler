@@ -31,6 +31,7 @@ fi
 app_entitlements="$project_root/Resources/iCloudScheduler.entitlements"
 if [[ "${SIGNING_IDENTITY:--}" == "-" ]]; then
   app_entitlements="$project_root/Resources/iCloudScheduler-adhoc.entitlements"
+  echo "Local ad-hoc build: permissions may be requested again after replacement. Use a stable Developer ID Application identity for public updates." >&2
 else
   framework="$application_path/Contents/Frameworks/Sparkle.framework/Versions/B"
   for nested in "$framework/XPCServices/Downloader.xpc" "$framework/XPCServices/Installer.xpc" "$framework/Autoupdate" "$framework/Updater.app" "$application_path/Contents/Frameworks/Sparkle.framework"; do

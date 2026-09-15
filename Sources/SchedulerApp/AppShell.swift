@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var settingsWindow: NSWindow?
     private var hotkey: GlobalHotkey?
     private var statusObserver: AnyCancellable?
+    private var preferencesObserver: AnyCancellable?
     private var placingPanel = false
     private let positionKey = "capturePanelTopLeft"
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -84,9 +85,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.shortcutError = "快捷键无法注册，可能已被其他应用占用。请重新录制。"
             model.errorMessage = "快捷键已被占用。请在“设置 → 通用”录制其他组合键，或从菜单栏打开窗口。"
         }
-        model.applyAppearance(); showCapture()
+        preferencesObserver = model.$preferences.map(\.showMenuBar).removeDuplicates().sink { [weak self] visible in
+            self?.statusItem?.isVisible = visible
+        }
+        model.applyAppearance()
+        if !Self.isBackgroundLaunch(NSAppleEventManager.shared().currentAppleEvent),
+           !CommandLine.arguments.contains("--background") { showCapture() }
         if !model.smokeMode || Bundle.main.bundleIdentifier == "dev.icloudscheduler.update-test" { updater.start() }
         if Bundle.main.bundleIdentifier == "dev.icloudscheduler.update-test" { showSettings() }
+    }
+    static func isBackgroundLaunch(_ event: NSAppleEventDescriptor?) -> Bool {
+        guard let event, event.eventID == AEEventID(kAEOpenApplication) else { return false }
+        return event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
     func applicationWillTerminate(_ notification: Notification) { model.persistDraft() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -133,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let anchor = saved.flatMap { $0.count == 2 ? NSPoint(x: $0[0], y: $0[1]) : nil }
         let screens = NSScreen.screens.map(\.visibleFrame)
         let fallback = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let height: CGFloat = model.stage == .input ? (model.attachments.isEmpty ? 285 : 410) : model.stage == .analyzing ? 245 : model.stage == .review ? model.reviewHeight : 440
+        let height: CGFloat = model.stage == .input ? (model.attachments.isEmpty ? 320 : 445) : model.stage == .analyzing ? 245 : model.stage == .review ? model.reviewHeight : 440
         panel.setContentSize(NSSize(width: 480, height: height))
         panel.setFrame(PanelPlacement.frame(size: panel.frame.size, anchor: anchor, screens: screens, fallback: fallback), display: true)
     }

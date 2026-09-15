@@ -112,7 +112,7 @@ final class AppModel: ObservableObject {
     var canAnalyze: Bool { !writing && !isGenerating && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty) }
     var selectedDrafts: [Draft] { drafts.filter(\.selected) }
     var canWrite: Bool {
-        !isDemo && !writing && editingID == nil && !selectedDrafts.isEmpty &&
+        !isDemo && !writing && !isGenerating && editingID == nil && !selectedDrafts.isEmpty &&
         selectedDrafts.allSatisfy { DraftValidator.errors($0).isEmpty }
     }
     var reviewNeedsAcknowledgment: Bool {
@@ -127,7 +127,7 @@ final class AppModel: ObservableObject {
         return selectedDrafts.count == 1 ? "添加到日历" : "添加 \(selectedDrafts.count) 项到日历"
     }
     func confirmAndWriteSelected() {
-        guard !writing, editingID == nil, !selectedDrafts.isEmpty else { return }
+        guard !writing, !isGenerating, editingID == nil, !selectedDrafts.isEmpty else { return }
         guard calendar.hasAccess else { authorizeCalendar(); return }
         if let incomplete = selectedDrafts.first(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) {
             editingID = incomplete.id; resizePanel?()
@@ -145,7 +145,7 @@ final class AppModel: ObservableObject {
         writeSelected()
     }
     func deleteSelectedDrafts() {
-        guard !writing, !selectedDrafts.isEmpty else { return }
+        guard !writing, !isGenerating, !selectedDrafts.isEmpty else { return }
         do {
             try finishDraftOperation(removing: Set(selectedDrafts.map(\.id)))
             activityLabel = "已删除待添加日程"
@@ -172,11 +172,11 @@ final class AppModel: ObservableObject {
         if panelIsVisible() { hidePanel?() }
     }
     var reviewHeight: CGFloat {
-        var height: CGFloat = 170
+        var height: CGFloat = 230
         for draft in drafts {
             let notes = DraftValidator.reviewNotes(draft)
             let lines = notes.joined().count / 46 + (notes.isEmpty ? 0 : 1)
-            height += 150 + CGFloat(lines) * 20
+            height += 270 + CGFloat(lines) * 20
             if !draft.conflicts.isEmpty { height += 52 }
             if !DraftValidator.errorsAfterReview(draft).isEmpty { height += 45 }
         }
@@ -260,6 +260,7 @@ final class AppModel: ObservableObject {
                 try Task.checkCancellation(); guard revision == token else { return }
                 drafts = result.events.map { Draft(event: $0, calendarID: targetCalendar) }
                 questions = result.questions
+                isGenerating = false
                 refreshConflicts(); persistDraft(); setStage(.review)
                 guard !drafts.isEmpty else {
                     reportFailure("未生成可添加的日程", questions.isEmpty ? "没有识别到日程，请补充安排后重新提交。" : questions.joined(separator: "\n")); return
@@ -287,7 +288,64 @@ final class AppModel: ObservableObject {
         }
         if preferences.runInBackground { hidePanel?() }
     }
-    func cancelAnalysis() { generation?.cancel(); revision = UUID(); isGenerating = false; activityLabel = "已取消生成"; setStage(.input) }
+    func cancelAnalysis() {
+        generation?.cancel(); revision = UUID(); isGenerating = false; activityLabel = "已取消生成"
+        if stage != .review { setStage(.input) }
+    }
+    func refineDraft(_ id: UUID?, instruction: String) {
+        let answer = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !answer.isEmpty, answer.count <= 4000, !isGenerating, !writing, editingID == nil, !isDemo else { return }
+        let original = id.flatMap { id in drafts.first { $0.id == id } }
+        guard id == nil ? drafts.isEmpty : original != nil else { return }
+        let config = activeConfig
+        let key: String
+        do {
+            guard store != nil else { throw AppError("本机存储不可用，无法补全草稿。") }
+            key = try readKey(config.id)
+            guard !key.isEmpty else { throw AppError("请先在设置中保存 API Key。") }
+        } catch { errorMessage = error.localizedDescription; return }
+        let token = UUID(); revision = token
+        let files = original == nil ? attachments : []
+        guard files.isEmpty || config.imageVerified != nil else { errorMessage = "请先验证当前模型的图片能力。"; return }
+        let zone = original?.event.timeZone ?? preferences.timeZone
+        let now = Date(), reminder = preferences.reminderMinutes, target = preferences.calendarID
+        let sourceText = text
+        isGenerating = true; errorMessage = nil; activityLabel = "正在补全日程…"
+        generation = Task {
+            defer { if revision == token { isGenerating = false } }
+            do {
+                let context: String
+                if let original {
+                    let json = String(decoding: try JSONEncoder().encode(original.event), as: UTF8.self)
+                    context = "只修改以下一条待添加草稿，保留未提及的已有字段。根据补充解决对应 missing；仍不明确的时间继续留空。输出修改后的唯一一条日程。\n当前草稿：\n" + json
+                } else { context = "根据原始输入及补充生成日程。\n原始输入：\n" + sourceText }
+                let inputText = context + "\n用户补充（优先于原始安排）：\n" + answer
+                let worker = Task.detached(priority: .userInitiated) { try AttachmentProcessor.prepare(text: inputText, attachments: files) }
+                let input = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+                try Task.checkCancellation(); guard revision == token else { return }
+                let result = try await extract(input, config, key, now, zone, reminder)
+                try Task.checkCancellation(); guard revision == token else { return }
+                if let original {
+                    guard result.events.count == 1, result.questions.isEmpty else { throw AppError("模型未返回唯一的补全日程，原草稿已保留。请换一种说法。") }
+                    guard let index = drafts.firstIndex(where: { $0.id == original.id }), drafts[index].event == original.event else { throw AppError("草稿已变化，请重新补全。") }
+                    var updated = original; updated.event = result.events[0]
+                    updated.reviewed = false; updated.conflictAcknowledged = false; updated.conflicts = []
+                    drafts[index] = updated
+                } else {
+                    guard !result.events.isEmpty else { throw AppError(result.questions.first ?? "还无法确定安排，请再补充日期和时间。") }
+                    drafts = result.events.map { Draft(event: $0, calendarID: target) }; questions = []
+                }
+                refreshConflicts(notify: false); persistDraft(); resizePanel?()
+                activityLabel = "补全完成，请确认后添加"
+            } catch {
+                guard revision == token else { return }
+                if !(error is CancellationError) && (error as? URLError)?.code != .cancelled {
+                    errorMessage = "补全失败：" + error.localizedDescription + " 原草稿已保留。"
+                    activityLabel = "补全未完成"
+                }
+            }
+        }
+    }
     func addAttachments(_ urls: [URL]) {
         inputChanged()
         for url in urls {

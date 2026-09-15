@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import PDFKit
 import SchedulerCore
 
@@ -8,6 +9,12 @@ enum NativeChecks {
         func check(_ name: String, _ test: () throws -> Bool) {
             do { if try test() { passed += 1; print("PASS \(name)") } else { failed += 1; print("FAIL \(name)") } }
             catch { failed += 1; print("FAIL \(name): \(error.localizedDescription)") }
+        }
+        check("login launch stays in background while explicit launch opens") {
+            let login = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEOpenApplication), targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+            login.setParam(NSAppleEventDescriptor(enumCode: OSType(keyAELaunchedAsLogInItem)), forKeyword: AEKeyword(keyAEPropData))
+            let manual = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEOpenApplication), targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+            return AppDelegate.isBackgroundLaunch(login) && !AppDelegate.isBackgroundLaunch(manual) && !AppDelegate.isBackgroundLaunch(nil)
         }
         let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("dist/validation/native-fixtures", isDirectory: true)
         func returnKey(_ flags: NSEvent.ModifierFlags = []) -> NSEvent {

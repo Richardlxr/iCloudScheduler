@@ -32,3 +32,20 @@
 - [后台应用的轻提示](https://sparkle-project.org/documentation/gentle-reminders/)
 
 以上文档核对于 2026-09-12。
+
+## 更新后权限重复请求（2026-09-15）
+
+旧版使用 ad-hoc 签名。macOS 隐私授权和钥匙串访问依赖应用的 designated requirement；ad-hoc 默认要求绑定当前二进制，替换后可能重新请求权限。保持 Bundle ID 或 Sparkle EdDSA 签名本身不足以保留这些授权。
+
+正式分发应持续使用同一开发团队的 Developer ID Application 签名，保持 Bundle ID `dev.icloudscheduler.app` 和钥匙串 service/account 不变，并按正式流程公证。首次从 ad-hoc 迁移到 Developer ID 时仍可能需要再授权一次，不能从应用内迁移或绕过系统授权。
+
+```sh
+SIGNING_IDENTITY='Developer ID Application: <name> (<TEAMID>)' ./scripts/build-app.sh release
+./scripts/package-release.sh
+```
+
+打包脚本现在默认拒绝非 Developer ID 的分发包。本机测试仍允许 ad-hoc 构建；确实需要分发这种包时，必须显式设置 `ALLOW_ADHOC_RELEASE=1`，并接受权限可能再次提示的限制。当前机器仅发现 Apple Development 身份，没有可用的 Developer ID Application，因此尚未验证正式签名升级后的权限连续性。
+
+发布前对比前后两版 `codesign -d -r- <app>` 的要求，并在独立测试用户下完成真实升级，核对日历权限、钥匙串读取和登录项。不要修改 TCC 数据库、关闭系统保护或把钥匙串访问开放给所有应用。
+
+依据：[Apple TN3127: Inside Code Signing: Requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)。
