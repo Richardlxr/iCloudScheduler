@@ -121,12 +121,18 @@ final class AppModel: ObservableObject {
     var reviewNeedsAcknowledgment: Bool {
         !questions.isEmpty || selectedDrafts.contains { !$0.conflicts.isEmpty || !DraftValidator.reviewNotes($0).isEmpty }
     }
+    /// What the selected drafts will do, used for the button and for the warnings around it.
+    var selectedIntents: Set<EventAction> { Set(selectedDrafts.map(\.intent)) }
     var reviewActionTitle: String {
-        if writing { return "正在添加…" }
+        if writing { return "正在处理…" }
         if selectedDrafts.contains(where: { !$0.usesReminders }), !calendar.hasAccess { return "允许日历访问" }
         if selectedDrafts.contains(where: \.usesReminders), !calendar.hasReminderAccess { return "允许提醒事项访问" }
         if editingID != nil { return "请先完成编辑" }
-        if selectedDrafts.contains(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) { return "补全后添加" }
+        if selectedDrafts.contains(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) { return "补全后处理" }
+        let intents = selectedIntents
+        if intents == [.cancel] { return selectedDrafts.count == 1 ? "确认取消这条日程" : "确认取消 \(selectedDrafts.count) 条日程" }
+        if intents == [.update] { return selectedDrafts.count == 1 ? "确认改期" : "确认改期 \(selectedDrafts.count) 项" }
+        if intents.contains(where: \.touchesExistingEvent) { return "确认处理 \(selectedDrafts.count) 项" }
         if reviewNeedsAcknowledgment { return selectedDrafts.count == 1 ? "仍然添加" : "仍然添加 \(selectedDrafts.count) 项" }
         return selectedDrafts.count == 1 ? "添加到日历" : "添加 \(selectedDrafts.count) 项到日历"
     }
@@ -137,6 +143,11 @@ final class AppModel: ObservableObject {
         }
         if selectedDrafts.contains(where: \.usesReminders), !calendar.hasReminderAccess { authorizeReminders(); return }
         if let incomplete = selectedDrafts.first(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) {
+            // A change is fixed by choosing the right existing event, not by editing fields.
+            guard !incomplete.intent.touchesExistingEvent else {
+                reportFailure("还不能执行这项改动", DraftValidator.errorsAfterReview(incomplete).joined(separator: "\n"))
+                return
+            }
             editingID = incomplete.id; resizePanel?()
             return
         }
@@ -145,6 +156,14 @@ final class AppModel: ObservableObject {
         refreshConflicts(notify: false)
         guard previous == selectedDrafts.map({ $0.conflicts }) else {
             reportFailure("冲突已变化", "请检查更新后的冲突，再选择仍然添加。"); return
+        }
+        if selectedDrafts.contains(where: { $0.intent.touchesExistingEvent }) {
+            // The target may have moved since it was listed; re-match and stop if anything changed.
+            let shown = selectedDrafts.map { $0.target }
+            resolveTargets()
+            guard shown == selectedDrafts.map({ $0.target }) else {
+                reportFailure("目标日程已变化", "日历中的对应日程发生了变化，请重新核对后再确认。"); return
+            }
         }
         for i in drafts.indices where drafts[i].selected {
             drafts[i].reviewed = true; drafts[i].conflictAcknowledged = true
@@ -194,7 +213,8 @@ final class AppModel: ObservableObject {
             let notes = DraftValidator.reviewNotes(draft)
             let lines = notes.joined().count / 46 + (notes.isEmpty ? 0 : 1)
             height += 270 + CGFloat(lines) * 20
-            if draft.event.startLocal == nil { height += 40 }
+            if draft.event.startLocal == nil && !draft.intent.touchesExistingEvent { height += 40 }
+            if draft.intent.touchesExistingEvent { height += 60 + CGFloat(max(1, (draft.matches ?? []).count)) * 42 }
             if !draft.conflicts.isEmpty { height += 52 }
             if !DraftValidator.errorsAfterReview(draft).isEmpty { height += 45 }
         }
@@ -277,6 +297,7 @@ final class AppModel: ObservableObject {
                 let result = try await extract(input, config, key, now, zone, reminder)
                 try Task.checkCancellation(); guard revision == token else { return }
                 drafts = result.events.map { makeDraft($0, calendarID: targetCalendar) }
+                resolveTargets()
                 questions = result.questions
                 isGenerating = false
                 refreshConflicts(); persistDraft(); setStage(.review)
@@ -285,6 +306,10 @@ final class AppModel: ObservableObject {
                 }
                 if drafts.contains(where: { !$0.conflicts.isEmpty }) {
                     reportFailure("发现日程冲突", "新日程与已有安排重叠。请在窗口中选择“仍然添加”或“删除”。")
+                    return
+                }
+                if drafts.contains(where: { $0.intent.touchesExistingEvent }) {
+                    reportFailure("需要你确认的改动", "这条消息要修改或取消日历中已有的日程，不会自动执行。请打开窗口核对目标后确认。")
                     return
                 }
                 if automatic && (background || !preferences.confirmBeforeAdding) {
@@ -314,6 +339,10 @@ final class AppModel: ObservableObject {
         let answer = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !answer.isEmpty, answer.count <= 4000, !isGenerating, !writing, editingID == nil, !isDemo else { return }
         let original = id.flatMap { id in drafts.first { $0.id == id } }
+        // A change points at an existing event; re-extracting it would drop that link.
+        guard original?.intent.touchesExistingEvent != true, !drafts.contains(where: { $0.intent.touchesExistingEvent }) else {
+            errorMessage = "改期和取消不能用一句话补全，请直接选择目标日程或丢弃后重写。"; return
+        }
         guard id == nil ? drafts.isEmpty : original != nil else { return }
         let config = activeConfig
         let key: String
@@ -450,12 +479,38 @@ final class AppModel: ObservableObject {
             catch { reportFailure("无法访问日历", error.localizedDescription) }
         }
     }
+    /// Finds the existing events a change message might mean, and selects one only when it is unambiguous.
+    func resolveTargets(now: Date = Date()) {
+        for i in drafts.indices where drafts[i].intent.touchesExistingEvent {
+            let found = (try? calendar.matches(for: drafts[i], now: now)) ?? []
+            drafts[i].matches = found
+            if let current = drafts[i].targetID, found.contains(where: { $0.id == current }) { continue }
+            // One clear candidate is preselected; anything else waits for the user to choose.
+            drafts[i].targetID = found.count == 1 ? found[0].id : nil
+        }
+    }
+    func selectTarget(_ matchID: String?, for id: UUID) {
+        guard !writing, !isGenerating, let index = drafts.firstIndex(where: { $0.id == id }) else { return }
+        drafts[index].targetID = matchID
+        drafts[index].reviewed = false
+        persistDraft(); resizePanel?()
+    }
+    /// Turns an unmatched change back into an ordinary new event, which is what the user can still use.
+    func convertToAddition(_ id: UUID) {
+        guard !writing, !isGenerating, let index = drafts.firstIndex(where: { $0.id == id }) else { return }
+        drafts[index].event.action = EventAction.add.rawValue
+        drafts[index].matches = nil; drafts[index].targetID = nil
+        drafts[index].calendarID = drafts[index].calendarID.isEmpty ? preferences.calendarID : drafts[index].calendarID
+        drafts[index].reviewed = false; drafts[index].conflictAcknowledged = false
+        refreshConflicts(notify: false); persistDraft(); resizePanel?()
+        activityLabel = "已改为新增日程，请确认"
+    }
     func refreshConflicts(notify: Bool = true) {
         guard !writing else { return }
         var newConflict = false
         for i in drafts.indices {
             let old = drafts[i].conflicts
-            let next = preferences.checkConflicts ? (try? calendar.conflicts(for: drafts[i])) ?? [] : []
+            let next = preferences.checkConflicts && drafts[i].intent != .cancel ? (try? calendar.conflicts(for: drafts[i])) ?? [] : []
             drafts[i].conflicts = next
             if old != next {
                 drafts[i].conflictAcknowledged = false
@@ -483,26 +538,27 @@ final class AppModel: ObservableObject {
         batchReceipts = []; isDemo = false; errorMessage = nil; setStage(.input); persistDraft()
     }
     func writeSelected() {
-        guard canWrite else { reportFailure("日程尚未添加", "请补全日程并核对时间与冲突后再添加。"); return }
-        guard let store else { reportFailure("日程添加失败", "本机存储不可用，草稿仍保留在窗口中。"); return }
-        guard calendar.hasAccess else { reportFailure("日程尚未添加", "请在设置中允许日历访问，并选择目标日历。草稿已保留。"); return }
+        guard canWrite else { reportFailure("日程尚未处理", "请补全日程并核对时间与冲突后再确认。"); return }
+        guard let store else { reportFailure("日程处理失败", "本机存储不可用，草稿仍保留在窗口中。"); return }
+        guard calendar.hasAccess else { reportFailure("日程尚未处理", "请在设置中允许日历访问，并选择目标日历。草稿已保留。"); return }
         refreshConflicts(notify: false)
         guard canWrite else { reportFailure("发现日程冲突", "日历发生变化，请重新核对冲突。"); return }
         let batchID = UUID(), selected = selectedDrafts
-        writing = true; batchReceipts = []; errorMessage = nil; activityLabel = "正在添加日程…"
+        let verb = selectedIntents == [.cancel] ? "取消" : selectedIntents == [.update] ? "改期" : "添加"
+        writing = true; batchReceipts = []; errorMessage = nil; activityLabel = "正在\(verb)日程…"
         defer {
             writing = false
             let saved = batchReceipts.filter { $0.status == "saved" }.count
             if errorMessage != nil || batchReceipts.contains(where: { $0.status != "saved" || $0.warning != nil }) || saved != selected.count {
                 persistDraft(); setStage(.receipt)
                 let detail = errorMessage ?? batchReceipts.compactMap(\.warning).first ?? batchReceipts.first(where: { $0.status != "saved" })?.message ?? "部分日程尚未完成。"
-                reportFailure("日程添加未全部完成", "已确认添加 \(saved)/\(selected.count) 项。\n\(detail)\n请在结果或近期记录中核对，不会自动重试。")
+                reportFailure("日程\(verb)未全部完成", "已完成 \(saved)/\(selected.count) 项。\n\(detail)\n请在结果或近期记录中核对，不会自动重试。")
             } else {
-                activityLabel = "已添加 \(saved) 项日程"
+                activityLabel = "已\(verb) \(saved) 项日程"
                 do { try finishDraftOperation(removing: Set(selected.map(\.id))) }
                 catch {
                     setStage(.receipt)
-                    reportFailure("日程已添加，输入清理失败", error.localizedDescription + "\n日程已写入，请勿重复添加。")
+                    reportFailure("日程已\(verb)，输入清理失败", error.localizedDescription + "\n改动已写入，请勿重复操作。")
                 }
             }
         }

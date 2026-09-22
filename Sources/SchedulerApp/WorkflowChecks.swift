@@ -18,9 +18,27 @@ final class FixtureCalendar: CalendarAccess {
     func reminderLists() -> [CalendarChoice] { hasReminderAccess ? [.init(id: "fixture-list", title: "测试清单", source: "本地测试")] : [] }
     func refresh() {}
     func conflicts(for draft: Draft) throws -> [String] { conflictTitles }
+    var candidates: [CalendarMatch] = []
+    var changed: [(String, Draft)] = []
+    func matches(for draft: Draft, now: Date) throws -> [CalendarMatch] {
+        draft.intent.touchesExistingEvent ? candidates : []
+    }
     func save(_ receipt: OperationReceipt, allDayReminder: AllDayReminder) throws -> OperationReceipt {
         saveCount += 1; reminder = allDayReminder
         if receipt.draft.usesReminders { reminderSaveCount += 1 }
+        if receipt.draft.intent.touchesExistingEvent {
+            changed.append((receipt.draft.intent.rawValue, receipt.draft))
+            guard let target = receipt.draft.target else { throw AppError("Synthetic change without a target") }
+            var result = receipt; result.status = outcome == "throw" ? "uncertain" : "saved"
+            result.eventID = target.id
+            result.previous = EventSnapshot(title: target.title, startLocal: target.startLocal,
+                                            endLocal: target.endLocal ?? target.startLocal, allDay: target.allDay,
+                                            timeZone: target.timeZone, location: "", notes: "",
+                                            calendarID: "fixture-calendar", partOfSeries: target.partOfSeries)
+            result.message = "Synthetic \(receipt.draft.intent.rawValue)"
+            if outcome == "throw" { throw AppError("Synthetic calendar failure") }
+            return result
+        }
         if outcome == "throw" { throw AppError("Synthetic calendar failure") }
         var result = receipt; result.status = outcome == "savedWarning" ? "saved" : outcome; result.message = "Synthetic \(outcome)"
         if outcome == "savedWarning" { result.warning = "Synthetic alarm mismatch" }
@@ -409,6 +427,94 @@ enum WorkflowChecks {
         seriesModel.drafts = [broken]; seriesModel.stage = .review
         check("a repeat that ends before it starts blocks instead of writing a single event",
               !DraftValidator.errorsAfterReview(broken).isEmpty && !seriesModel.canWrite)
+        // A message that changes or cancels an existing event never acts on its own.
+        let original = CalendarMatch(id: "existing-1", title: "组会", startLocal: "2035-09-23T14:00:00",
+                                     endLocal: "2035-09-23T15:00:00", allDay: false, timeZone: "Asia/Shanghai",
+                                     calendarName: "工作", partOfSeries: false)
+        let sibling = CalendarMatch(id: "existing-2", title: "组会准备", startLocal: "2035-09-23T16:00:00",
+                                    endLocal: "2035-09-23T17:00:00", allDay: false, timeZone: "Asia/Shanghai",
+                                    calendarName: "课程", partOfSeries: false)
+        func changeModel(_ name: String, action: EventAction, candidates: [CalendarMatch],
+                         start: String? = "2035-09-25T15:00:00") -> (AppModel, FixtureCalendar) {
+            let calendar = FixtureCalendar(); calendar.candidates = candidates
+            let model = AppModel(directory: root.appendingPathComponent(name), calendar: calendar,
+                                 readKey: { _ in "fixture" }, extractor: { _, _, _, _, zone, _ in
+                var event = ExtractedEvent(title: "组会", startLocal: start, endLocal: nil, timeZone: zone,
+                                           source: "组会改期", action: action.rawValue, targetTitle: "组会",
+                                           targetStartLocal: "2035-09-23")
+                if action == .cancel { event.startLocal = nil; event.reminderMinutes = nil }
+                return Extraction(events: [event])
+            }, integrateSystem: false)
+            model.preferences.calendarID = "fixture-calendar"; model.preferences.checkConflicts = false
+            model.text = "组会改到周四下午三点"
+            return (model, calendar)
+        }
+        for action in [EventAction.update, EventAction.cancel] {
+            let (model, calendar) = changeModel("auto-" + action.rawValue, action: action, candidates: [original])
+            model.preferences.runInBackground = true; model.preferences.confirmBeforeAdding = false
+            var alerts: [String] = []; var hides = 0
+            model.presentFailure = { title, _ in alerts.append(title) }
+            model.hidePanel = { hides += 1 }; model.panelIsVisible = { hides == 0 }
+            model.analyze()
+            await settle { !model.isGenerating }
+            await Task.yield()
+            check("a \(action.rawValue) is never carried out in the background",
+                  calendar.saveCount == 0 && calendar.changed.isEmpty && model.stage == .review
+                  && alerts == ["需要你确认的改动"])
+            check("the \(action.rawValue) draft waits with its target selected",
+                  model.drafts.count == 1 && model.drafts[0].target?.id == original.id && model.canWrite)
+        }
+        let (single, singleCalendar) = changeModel("changeSingle", action: .update, candidates: [original])
+        single.preferences.confirmBeforeAdding = true
+        single.analyze()
+        await settle { single.stage == .review && !single.isGenerating }
+        check("one clear candidate is preselected and named on the button",
+              single.drafts[0].target?.id == original.id && single.reviewActionTitle == "确认改期")
+        single.confirmAndWriteSelected()
+        await settle { singleCalendar.changed.count == 1 }
+        check("confirming a reschedule sends exactly one change with its target",
+              singleCalendar.changed.count == 1 && singleCalendar.changed[0].0 == "update"
+              && singleCalendar.changed[0].1.target?.id == original.id
+              && single.receipts.first?.previous?.startLocal == original.startLocal)
+        let (ambiguous, ambiguousCalendar) = changeModel("changeAmbiguous", action: .cancel, candidates: [original, sibling])
+        ambiguous.preferences.confirmBeforeAdding = true
+        ambiguous.analyze()
+        await settle { ambiguous.stage == .review && !ambiguous.isGenerating }
+        check("two candidates are never resolved by guessing",
+              ambiguous.drafts[0].targetID == nil && !ambiguous.canWrite && ambiguous.drafts[0].matches?.count == 2)
+        ambiguous.confirmAndWriteSelected()
+        check("confirming without a chosen target writes nothing", ambiguousCalendar.changed.isEmpty)
+        ambiguous.selectTarget(sibling.id, for: ambiguous.drafts[0].id)
+        check("the chosen candidate is the one that will be acted on",
+              ambiguous.drafts[0].target?.id == sibling.id && ambiguous.canWrite
+              && ambiguous.reviewActionTitle == "确认取消这条日程")
+        ambiguous.confirmAndWriteSelected()
+        await settle { ambiguousCalendar.changed.count == 1 }
+        check("a cancellation removes only the event that was chosen",
+              ambiguousCalendar.changed.count == 1 && ambiguousCalendar.changed[0].0 == "cancel"
+              && ambiguousCalendar.changed[0].1.target?.id == sibling.id)
+        let (moved, movedCalendar) = changeModel("changeMoved", action: .update, candidates: [original])
+        moved.preferences.confirmBeforeAdding = true
+        moved.analyze()
+        await settle { moved.stage == .review && !moved.isGenerating }
+        var movedTarget = original; movedTarget.startLocal = "2035-09-23T17:30:00"
+        movedCalendar.candidates = [movedTarget]
+        var movedAlerts: [String] = []; moved.presentFailure = { title, _ in movedAlerts.append(title) }
+        moved.confirmAndWriteSelected()
+        check("a target that moved since it was shown stops the operation",
+              movedCalendar.changed.isEmpty && movedAlerts == ["目标日程已变化"])
+        let (orphan, orphanCalendar) = changeModel("changeOrphan", action: .update, candidates: [])
+        orphan.preferences.confirmBeforeAdding = true
+        orphan.analyze()
+        await settle { orphan.stage == .review && !orphan.isGenerating }
+        check("a change with no match refuses to act", !orphan.canWrite && (orphan.drafts[0].matches ?? []).isEmpty)
+        orphan.convertToAddition(orphan.drafts[0].id)
+        check("an unmatched reschedule can become a plain new event",
+              orphan.drafts[0].intent == .add && orphan.drafts[0].calendarID == "fixture-calendar" && orphan.canWrite)
+        orphan.confirmAndWriteSelected()
+        await settle { orphanCalendar.saveCount == 1 }
+        check("the converted draft is written as an addition, not a change",
+              orphanCalendar.saveCount == 1 && orphanCalendar.changed.isEmpty)
         print("\n\(passed) workflow checks passed, \(failed) failed. Injected model and calendar only; no network, Keychain or real calendar access.")
         return failed == 0 ? 0 : 1
     }

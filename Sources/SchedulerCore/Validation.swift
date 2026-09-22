@@ -69,8 +69,9 @@ public enum Temporal {
 
 public enum DraftValidator {
     public static func canAddAutomatically(_ drafts: [Draft], questions: [String], now: Date = Date()) -> Bool {
+        // Changing or removing an existing event is never done unattended, however complete it looks.
         !drafts.isEmpty && questions.isEmpty && drafts.allSatisfy {
-            $0.selected && !$0.reviewed && !$0.conflictAcknowledged && errors($0, now: now).isEmpty
+            !$0.intent.touchesExistingEvent && $0.selected && !$0.reviewed && !$0.conflictAcknowledged && errors($0, now: now).isEmpty
         }
     }
     // Explicit UI confirmation acknowledges visible warnings, but never bypasses missing data or invalid dates.
@@ -90,6 +91,28 @@ public enum DraftValidator {
         }
         return notes
     }
+    /// A change acts on an event that already exists, so it needs a chosen target rather than a calendar.
+    private static func changeErrors(_ draft: Draft, now: Date) -> [String] {
+        var errors: [String] = []
+        guard let target = draft.target else {
+            errors.append((draft.matches ?? []).isEmpty ? "没有找到对应的日程，请选择其他处理方式。" : "请选择要处理的那一条日程。")
+            return errors
+        }
+        if let reason = target.blockedReason { errors.append(reason) }
+        if draft.intent == .update {
+            // A reschedule may keep the original time and change only the place.
+            if draft.event.startLocal != nil {
+                do { _ = try Temporal.interval(draft.event) } catch { errors.append(error.localizedDescription) }
+            } else if draft.event.location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                errors.append("没有可改的新时间或新地点。")
+            }
+            if let start = draft.event.startLocal, start == target.startLocal {
+                errors.append("新时间与原日程相同，无需修改。")
+            }
+        }
+        if !draft.event.missing.isEmpty { errors.append("待补充：" + draft.event.missing.joined(separator: "、")) }
+        return errors
+    }
     /// The alarm closest to the start is the last chance to be told; earlier ones may already be gone.
     private static func lastAlarm(_ event: ExtractedEvent) -> Int? {
         event.allReminderMinutes.filter { (0...10080).contains($0) }.min()
@@ -99,6 +122,7 @@ public enum DraftValidator {
         let event = draft.event
         if event.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || event.title.count > 200 { errors.append("标题不能为空且不能超过 200 字。") }
         if event.location.count > 1000 || event.notes.count > 10000 { errors.append("地点或备注太长。") }
+        if draft.intent.touchesExistingEvent { return errors + changeErrors(draft, now: now) }
         if requireCalendar && draft.calendarID.isEmpty { errors.append("请选择目标日历。") }
         if !event.missing.isEmpty { errors.append("待补充：" + event.missing.joined(separator: "、")) }
         if event.allReminderMinutes.contains(where: { !(0...10080).contains($0) }) { errors.append("提醒应在开始前 0–10080 分钟之间。") }
@@ -131,7 +155,8 @@ public enum ExtractionDecoder {
         let required: Set<String> = ["title", "startLocal", "endLocal", "timeZone", "allDay", "location", "notes", "reminderMinutes", "missing", "assumptions", "source"]
         // Timing, repetition and routing are additive: a profile may omit them, and nothing else may be injected.
         let optional: Set<String> = ["extraReminderMinutes", "kind", "dueDay", "dayPart", "lunarDate",
-                                     "isDeadline", "repeatRule", "repeatDays", "repeatUntil", "repeatCount"]
+                                     "isDeadline", "repeatRule", "repeatDays", "repeatUntil", "repeatCount",
+                                     "action", "targetTitle", "targetStartLocal"]
         for event in events {
             let keys = Set(event.keys)
             guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else {
@@ -148,6 +173,11 @@ public enum ExtractionDecoder {
             if event.dayPart.map({ DayPart(rawValue: $0) == nil }) == true { event.dayPart = nil }
             if event.repeatRule.map({ Recurrence.Rule(rawValue: $0) == nil }) == true { event.repeatRule = nil }
             if event.kind.map({ !["event", "task"].contains($0) }) == true { event.kind = nil }
+            if event.action.map({ EventAction(rawValue: $0) == nil }) == true { event.action = nil }
+            // A change with nothing to match on cannot be carried out, so it is not one.
+            if event.intent.touchesExistingEvent, (event.targetTitle ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+                event.targetTitle = event.title
+            }
             if LunarDate(event.lunarDate) == nil { event.lunarDate = nil }
             event.repeatDays = event.repeatDays.map { days in Array(Set(days.filter { (1...7).contains($0) })).sorted() }
             extraction.events[index] = event

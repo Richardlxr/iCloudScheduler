@@ -9,8 +9,8 @@
 <key>CFBundleLocalizations</key><array><string>zh_CN</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>0.5.0</string>
-<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleShortVersionString</key><string>0.6.0</string>
+<key>CFBundleVersion</key><string>9</string>
 <key>SUFeedURL</key><string>https://github.com/Richardlxr/iCloudScheduler/releases/latest/download/appcast.xml</string>
 <key>SUPublicEDKey</key><string>myl1tYDG83ShgzXxA1VrO95gpJtjNHl0qiOdUpUWAjY=</string>
 <key>SUEnableAutomaticChecks</key><true/>

@@ -120,3 +120,12 @@ Key、地址、模型或超时修改都会使旧验证失效。保存 Key 前，
 - 重复只支持 `EKRecurrenceRule` 能精确表达的六种，见 `SchedulerCore/Recurrence.swift`；新建重复日程用 `.futureEvents` 保存，撤销同样用 `.futureEvents`，并保留指纹校验。冲突检查只看第一次发生。
 - 待办（`kind="task"`）在授权并选定清单后写入 `EKReminder`，需要 `NSRemindersFullAccessUsageDescription`。未授权或未选清单时退回日历，绝不丢弃。提醒事项的核对只按标识符查找，找不到即标记不确定。
 - 验收记录见 [提醒场景验收记录](research/reminder-scenarios-validation.md)。
+
+## 改期与取消（2026-09-22）
+
+- 契约新增可选字段 `action`（add/update/cancel）、`targetTitle`、`targetStartLocal`。模型只复述消息里对“原来那件事”的叫法和日期，看不到也不需要知道用户日历里有什么；匹配全部在本机完成，日历标题不出本机。
+- `CalendarRepository.matches(for:now:)` 在目标日期当天（没说日期时是昨天到 31 天后）按标题归一化后做双向包含匹配，最多 8 条候选。不可修改的日历、有参与者的日程会带上 `blockedReason`，只展示不执行。
+- 安全边界：`canAddAutomatically` 对任何 `touchesExistingEvent` 的草稿一律返回 false；后台/免确认模式遇到改期或取消会打开窗口并弹窗。确认时重新匹配一次，目标与确认前不一致就中止。执行前再按标识符读回，标题或开始时间变了也中止。
+- 改期只改时间和地点，重复日程用 `.thisEvent` 只动被指到的那一次；取消前先快照（标题/起止/时区/地点/备注/日历），写进回执的 `previous`，撤销时据此改回或重建。重复日程的单次取消不提供恢复。
+- 改期和取消不能走“一句话补全”：重新抽取会丢掉与已有日程的对应关系，入口在这两种草稿上不展示，模型调用也会拒绝。
+- 验收记录见 [改期与取消验收记录](research/change-and-cancel-validation.md)。

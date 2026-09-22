@@ -367,5 +367,88 @@ check("drafts stored by earlier builds still decode without the new fields") {
         && restored.allReminderMinutes == [15]
 }
 
+
+// Changing or removing an existing event: the rules that keep it from happening by itself.
+let existing = CalendarMatch(id: "event-1", title: "组会", startLocal: "2026-09-23T14:00:00", endLocal: "2026-09-23T15:00:00",
+                             allDay: false, timeZone: zone, calendarName: "工作", partOfSeries: false)
+func changeDraft(_ action: EventAction, start: String? = "2026-09-24T15:00:00", target: CalendarMatch? = existing,
+                 matches: [CalendarMatch]? = nil, location: String = "") -> Draft {
+    var event = ExtractedEvent(title: "组会", startLocal: start, endLocal: nil, timeZone: zone, location: location,
+                               source: "组会改到周四下午三点", action: action.rawValue, targetTitle: "组会",
+                               targetStartLocal: "2026-09-23")
+    if action == .cancel { event.startLocal = nil; event.reminderMinutes = nil }
+    var draft = Draft(event: event, calendarID: "test-only")
+    draft.matches = matches ?? (target.map { [$0] } ?? [])
+    draft.targetID = target?.id
+    return draft
+}
+check("a change is never carried out unattended, however complete it looks") {
+    let update = changeDraft(.update), cancel = changeDraft(.cancel)
+    return DraftValidator.errors(update, now: hintedNow).isEmpty && DraftValidator.errors(cancel, now: hintedNow).isEmpty
+        && !DraftValidator.canAddAutomatically([update], questions: [], now: hintedNow)
+        && !DraftValidator.canAddAutomatically([cancel], questions: [], now: hintedNow)
+        && !DraftValidator.canAddAutomatically([draft, update], questions: [], now: hintedNow)
+}
+check("a change with nothing selected cannot be confirmed") {
+    let ambiguous = changeDraft(.cancel, target: nil, matches: [existing, CalendarMatch(id: "event-2", title: "组会",
+        startLocal: "2026-09-23T16:00:00", endLocal: nil, allDay: false, timeZone: zone, calendarName: "课程", partOfSeries: false)])
+    return !DraftValidator.errorsAfterReview(ambiguous, now: hintedNow).isEmpty
+        && DraftValidator.errorsAfterReview(ambiguous, now: hintedNow)[0].contains("请选择")
+}
+check("a change with no candidate at all says so instead of adding something") {
+    let orphan = changeDraft(.update, target: nil, matches: [])
+    return DraftValidator.errorsAfterReview(orphan, now: hintedNow).contains { $0.contains("没有找到") }
+}
+check("an event that cannot be edited blocks with the reason") {
+    var locked = existing; locked.blockedReason = "这条日程有参与者，改动会通知他们，请在系统日历处理。"
+    let draft = changeDraft(.cancel, target: locked)
+    return !locked.isEditable && DraftValidator.errorsAfterReview(draft, now: hintedNow).contains { $0.contains("参与者") }
+}
+check("a reschedule to the same time is refused as a no-op") {
+    !DraftValidator.errorsAfterReview(changeDraft(.update, start: existing.startLocal), now: hintedNow).isEmpty
+}
+check("a reschedule that only moves the place is allowed without a new time") {
+    DraftValidator.errorsAfterReview(changeDraft(.update, start: nil, location: "二号楼报告厅"), now: hintedNow).isEmpty
+}
+check("a reschedule with neither a new time nor a new place is refused") {
+    !DraftValidator.errorsAfterReview(changeDraft(.update, start: nil), now: hintedNow).isEmpty
+}
+check("a change does not require a target calendar, because it has a target event") {
+    var draft = changeDraft(.update); draft.calendarID = ""
+    return DraftValidator.errorsAfterReview(draft, now: hintedNow).isEmpty
+}
+check("an invalid new time still blocks a reschedule") {
+    !DraftValidator.errorsAfterReview(changeDraft(.update, start: "2026-02-30T15:00:00"), now: hintedNow).isEmpty
+}
+check("the contract accepts the three intents and drops anything else") {
+    let json = validJSON.replacingOccurrences(of: #""source":"会议""#, with: #""source":"会议","action":"cancel","targetTitle":"组会","targetStartLocal":"2026-09-23""#)
+    let cancelled = try ExtractionDecoder.decode(json).events.first
+    let bogus = try ExtractionDecoder.decode(validJSON.replacingOccurrences(of: #""source":"会议""#, with: #""source":"会议","action":"reschedule""#)).events.first
+    return cancelled?.intent == .cancel && cancelled?.targetTitle == "组会" && bogus?.intent == .add && bogus?.action == nil
+}
+check("a change that names nothing falls back to its own title rather than matching everything") {
+    let json = validJSON.replacingOccurrences(of: #""source":"会议""#, with: #""source":"会议","action":"update","targetTitle":"  ""#)
+    return try ExtractionDecoder.decode(json).events.first?.targetTitle == "会议"
+}
+check("receipts and drafts carry the change through storage") {
+    let draft = changeDraft(.cancel)
+    var receipt = OperationReceipt(batchID: UUID(), draft: draft, status: "saved")
+    receipt.previous = EventSnapshot(title: "组会", startLocal: "2026-09-23T14:00:00", endLocal: "2026-09-23T15:00:00",
+                                     allDay: false, timeZone: zone, location: "", notes: "", calendarID: "work",
+                                     partOfSeries: false)
+    let restored = try JSONDecoder().decode(OperationReceipt.self, from: JSONEncoder().encode(receipt))
+    return restored.draft.intent == .cancel && restored.draft.target?.id == "event-1"
+        && restored.previous?.when == "2026-09-23 14:00"
+}
+check("drafts stored before change support still decode as plain additions") {
+    var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as! [String: Any]
+    for key in ["matches", "targetID", "toReminders"] { old.removeValue(forKey: key) }
+    var event = old["event"] as! [String: Any]
+    for key in ["action", "targetTitle", "targetStartLocal"] { event.removeValue(forKey: key) }
+    old["event"] = event
+    let restored = try JSONDecoder().decode(Draft.self, from: JSONSerialization.data(withJSONObject: old))
+    return restored.intent == .add && restored.target == nil && !restored.usesReminders
+}
+
 print("\n\(passed) passed, \(failed) failed. Offline checks only; no API keys or calendars accessed.")
 if failed > 0 { exit(1) }

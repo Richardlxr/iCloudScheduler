@@ -15,7 +15,7 @@
 
 ## 下载与安装
 
-前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.5.0-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
+前往 [GitHub Releases](https://github.com/Richardlxr/iCloudScheduler/releases/latest) 下载 `iCloudScheduler-0.6.0-macos-universal.dmg`，打开后将 `iCloudScheduler.app` 拖到 `Applications`。也提供 ZIP 压缩包。需要 **macOS 14+，Apple Silicon（M 系列芯片）或 Intel Mac**。
 
 当前下载包使用 ad-hoc 签名，尚未通过 Apple Developer ID 签名与公证，macOS 可能阻止首次打开；更新后可能需要重新授权日历和钥匙串。也可按下面的步骤从源码构建；一个 Universal 安装包同时包含 arm64 与 x86_64 两种架构。
 
@@ -53,6 +53,8 @@ open dist/iCloudScheduler.app
 
 “周五前交”“月底之前缴费”这类截止说法会把时间对齐到截止点，并自动加一条提前提醒（两天以上提前一天，当天提前几小时）。农历日期（农历八月十五、闰五月十五）在本机用系统农历换算，不交给模型推算。每周例会、课表、每月缴费这类重复安排会写成系统日历的重复规则：每天、每个工作日、每周（可指定周几）、每两周、每月、每年，支持结束日期或次数；无法用这些规则表达的复杂重复只添加第一次并说明。航班、面试等需要准备的安排可以带多个提醒（如提前一天加提前三小时）。
 
+群里第二多的消息不是新安排，而是改期和取消。写“组会改到周四下午三点”“明天的班会取消了”时，应用不再又加一条，而是在本机日历里找出可能对应的那条日程，列在卡片上让你选：只有一条候选才会预先选中，两条以上一定要你点。确认后只改时间和地点，提醒与其他内容保持不变；取消会删掉那一条，近期记录里可以恢复。**改期和取消永远不会自动执行**，即使开了后台运行或关掉了添加前确认，也会打开窗口等你确认。有参与者的日程、不可修改日历里的日程一律不动，只提示到系统日历处理；重复日程只处理被指到的那一次。找不到对应日程时会直接说明，改期可以一键改为新增。日历标题始终留在本机，不会发给模型。
+
 办理、提交、缴费这类**待办**默认写入“提醒事项”而不是日历：没做完不会消失，可以勾掉或顺延；会议、上课等约定仍然写入日历。需要在“设置 → 日历与提醒”授权并选择清单，未授权时待办继续写入日历，不会丢失；每条草稿也能单独切换目标。草稿仍缺时间时，卡片上直接提供“尽快 / 今晚 / 明早 / 明天下午 / 本周内”按钮，在本机换算，不再调用模型。
 
 “通用”可选择 `Enter` 或 `⌘ Enter` 提交，`Shift Enter` 换行。开启“提交后后台运行”会在任务开始后收起窗口；`Esc` 和呼出快捷键只收起，不提交、不取消。生成或添加失败、读回结果不确定时会重新打开窗口并弹窗提示，不自动重试。开启后台运行时直接尝试添加，不再要求确认；只有确认全部添加成功才保持安静。冲突、信息缺失、部分失败或提醒被系统调整都会弹窗。前台确认模式下若手动收起窗口，草稿生成后也会弹窗请求确认。退出应用会中断生成。
@@ -76,11 +78,11 @@ codesign --force --sign - "$checks_binary"
 
 离线检查覆盖日期/夏令时、缺失信息、提醒、接口地址、模型响应和配置失效，不访问网络、钥匙串或真实日历。
 
-已实现输入、设置、模型请求、日程编辑、指定日历写入、重复规则、待办写入提醒事项、冲突提示、操作记录、恢复核对和有条件撤销。自动找空档、修改或取消已有日程、DOCX/ICS、上游原生 PDF 上传和流式响应尚未实现。模型失败不自动重试，日历保存成功不代表其他设备已经完成同步。
+已实现输入、设置、模型请求、日程编辑、指定日历写入、重复规则、待办写入提醒事项、改期与取消已有日程、冲突提示、操作记录、恢复核对和有条件撤销。自动找空档、DOCX/ICS、上游原生 PDF 上传和流式响应尚未实现。模型失败不自动重试，日历保存成功不代表其他设备已经完成同步。
 
-自动化验收使用合成模型和日历，共 267 项离线检查通过；这些检查不代表六家真实推理、跨设备同步或系统提醒已全部验收。详见 [开发与验证说明](docs/development.md)、[v0.3.0 发布核验](docs/research/release-v0.3.0-validation.md)及 [v0.2.0 更新流程核验](docs/research/release-v0.2.0-validation.md)。
+自动化验收使用合成模型和日历，共 294 项离线检查通过；这些检查不代表六家真实推理、跨设备同步或系统提醒已全部验收。详见 [开发与验证说明](docs/development.md)、[v0.3.0 发布核验](docs/research/release-v0.3.0-validation.md)及 [v0.2.0 更新流程核验](docs/research/release-v0.2.0-validation.md)。
 
-窗口记忆、可选提交快捷键、后台处理和自定义全天提醒的后续验证见 [后台流程验收记录](docs/research/background-validation.md)。输入框、附件读取与短期提醒换算的验证见 [输入与时限验收记录](docs/research/capture-and-timing-validation.md)；时段、截止、农历、重复与提醒事项的验证见 [提醒场景验收记录](docs/research/reminder-scenarios-validation.md)。
+窗口记忆、可选提交快捷键、后台处理和自定义全天提醒的后续验证见 [后台流程验收记录](docs/research/background-validation.md)。输入框、附件读取与短期提醒换算的验证见 [输入与时限验收记录](docs/research/capture-and-timing-validation.md)；时段、截止、农历、重复与提醒事项的验证见 [提醒场景验收记录](docs/research/reminder-scenarios-validation.md)；改期与取消的验证见 [改期与取消验收记录](docs/research/change-and-cancel-validation.md)。
 
 ## 方案文档
 

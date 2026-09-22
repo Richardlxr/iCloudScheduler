@@ -13,6 +13,7 @@ protocol CalendarAccess {
     func reminderLists() -> [CalendarChoice]
     func refresh()
     func conflicts(for draft: Draft) throws -> [String]
+    func matches(for draft: Draft, now: Date) throws -> [CalendarMatch]
     func save(_ receipt: OperationReceipt, allDayReminder: AllDayReminder) throws -> OperationReceipt
     func reconcile(_ receipt: OperationReceipt) throws -> OperationReceipt
     func undo(_ receipt: OperationReceipt) throws -> OperationReceipt
@@ -63,8 +64,136 @@ final class CalendarRepository: CalendarAccess {
     func save(_ receipt: OperationReceipt, allDayReminder: AllDayReminder) throws -> OperationReceipt {
         let errors = DraftValidator.errors(receipt.draft)
         guard errors.isEmpty else { throw AppError(errors.joined(separator: "\n")) }
-        return receipt.draft.usesReminders ? try saveReminder(receipt, allDayReminder: allDayReminder)
-                                           : try saveEvent(receipt, allDayReminder: allDayReminder)
+        switch receipt.draft.intent {
+        case .add:
+            return receipt.draft.usesReminders ? try saveReminder(receipt, allDayReminder: allDayReminder)
+                                               : try saveEvent(receipt, allDayReminder: allDayReminder)
+        case .update: return try applyUpdate(receipt)
+        case .cancel: return try applyCancel(receipt)
+        }
+    }
+    /// Existing events a change message might mean. Titles stay on this machine.
+    func matches(for draft: Draft, now: Date) throws -> [CalendarMatch] {
+        guard hasAccess, draft.intent.touchesExistingEvent else { return [] }
+        let event = draft.event
+        let zone = TimeZone(identifier: event.timeZone) ?? .current
+        var gregorian = Calendar(identifier: .gregorian); gregorian.timeZone = zone
+        let window: DateInterval
+        if let anchor = event.targetStartLocal, let day = Self.day(anchor, timeZone: event.timeZone, calendar: gregorian) {
+            // The message named the day the original was on, so only that day is searched.
+            window = DateInterval(start: day, end: day.addingTimeInterval(86400))
+        } else {
+            // Otherwise: anything still ahead, plus yesterday for a change that arrives late.
+            window = DateInterval(start: gregorian.startOfDay(for: now).addingTimeInterval(-86400),
+                                  end: gregorian.startOfDay(for: now).addingTimeInterval(31 * 86400))
+        }
+        let needle = Self.normalize(event.targetTitle ?? event.title)
+        guard !needle.isEmpty else { return [] }
+        let predicate = store.predicateForEvents(withStart: window.start, end: window.end, calendars: nil)
+        return store.events(matching: predicate)
+            .filter { $0.status != .canceled }
+            .filter { candidate in
+                let title = Self.normalize(candidate.title ?? "")
+                return !title.isEmpty && (title.contains(needle) || needle.contains(title))
+            }
+            .sorted { $0.startDate < $1.startDate }
+            .prefix(8)
+            .map { Self.match($0) }
+    }
+    private static func day(_ value: String, timeZone: String, calendar: Calendar) -> Date? {
+        let text = String(value.prefix(10))
+        guard let parsed = try? Temporal.parse(text, timeZone: timeZone, allDay: true) else { return nil }
+        return calendar.startOfDay(for: parsed)
+    }
+    private static func normalize(_ value: String) -> String {
+        value.lowercased().filter { !$0.isWhitespace && !$0.isPunctuation && !$0.isSymbol }
+    }
+    private static func match(_ event: EKEvent) -> CalendarMatch {
+        let zone = event.timeZone?.identifier ?? TimeZone.current.identifier
+        var blocked: String?
+        if !event.calendar.allowsContentModifications { blocked = "这条日程所在的日历不可修改，请在系统日历处理。" }
+        else if event.hasAttendees { blocked = "这条日程有参与者，改动会通知他们，请在系统日历处理。" }
+        return CalendarMatch(id: event.eventIdentifier ?? UUID().uuidString,
+                             title: event.title ?? "未命名日程",
+                             startLocal: Temporal.format(event.startDate, timeZone: zone, allDay: event.isAllDay),
+                             endLocal: Temporal.format(event.endDate, timeZone: zone, allDay: event.isAllDay),
+                             allDay: event.isAllDay, timeZone: zone,
+                             calendarName: event.calendar.title, partOfSeries: event.hasRecurrenceRules,
+                             blockedReason: blocked)
+    }
+    /// Re-checks that the event still looks the way it did when the user confirmed it.
+    private func locateTarget(_ receipt: OperationReceipt) throws -> (EKEvent, CalendarMatch) {
+        guard hasAccess else { throw AppError("需要日历权限才能修改已有日程。") }
+        guard let target = receipt.draft.target else { throw AppError("没有选择要处理的日程。") }
+        guard let event = store.event(withIdentifier: target.id), event.status != .canceled else {
+            throw AppError("目标日程已不存在，可能已被删除或同步移除，已停止操作。")
+        }
+        let current = Self.match(event)
+        guard current.startLocal == target.startLocal, current.title == target.title else {
+            throw AppError("目标日程已变化（现在是 \(current.when)），请重新确认后再操作。")
+        }
+        if let reason = current.blockedReason { throw AppError(reason) }
+        return (event, current)
+    }
+    private func snapshot(_ event: EKEvent) -> EventSnapshot {
+        let zone = event.timeZone?.identifier ?? TimeZone.current.identifier
+        return EventSnapshot(title: event.title ?? "",
+                             startLocal: Temporal.format(event.startDate, timeZone: zone, allDay: event.isAllDay),
+                             endLocal: Temporal.format(event.endDate, timeZone: zone, allDay: event.isAllDay),
+                             allDay: event.isAllDay, timeZone: zone,
+                             location: event.location ?? "", notes: event.notes ?? "",
+                             calendarID: event.calendar.calendarIdentifier, partOfSeries: event.hasRecurrenceRules)
+    }
+    /// Moves an existing event. Only the time and place change; reminders and everything else stay.
+    private func applyUpdate(_ receipt: OperationReceipt) throws -> OperationReceipt {
+        let (event, current) = try locateTarget(receipt)
+        var result = receipt
+        result.previous = snapshot(event)
+        result.eventID = current.id
+        let draft = receipt.draft
+        if draft.event.startLocal != nil {
+            let interval = try Temporal.interval(draft.event)
+            event.startDate = interval.start; event.endDate = interval.end
+            event.isAllDay = draft.event.allDay
+            event.timeZone = TimeZone(identifier: draft.event.timeZone)
+        }
+        let place = draft.event.location.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !place.isEmpty { event.location = place }
+        // One occurrence of a series moves on its own; the rest of the series is left alone.
+        try store.save(event, span: .thisEvent, commit: true)
+        guard let saved = store.event(withIdentifier: current.id) ?? store.event(withIdentifier: event.eventIdentifier ?? current.id) else {
+            result.status = "uncertain"; result.message = "修改已提交，但读回尚未确认，请在系统日历核对。"
+            return result
+        }
+        result.eventID = saved.eventIdentifier
+        let after = Self.match(saved)
+        let expected = draft.event.startLocal.map { $0 == after.startLocal } ?? true
+        guard expected, (place.isEmpty || saved.location == place) else {
+            result.status = "uncertain"; result.message = "修改已提交，但读回的时间或地点与预期不符，请在系统日历核对。"
+            return result
+        }
+        result.status = "saved"; result.fingerprint = fingerprint(saved)
+        result.message = "已把〈\(after.title)〉从 \(result.previous?.when ?? "原时间") 改到 \(after.when)。"
+            + (current.partOfSeries ? "仅改动了重复日程的这一次。" : "")
+        return result
+    }
+    /// Removes the occurrence a message cancelled, keeping enough to put it back.
+    private func applyCancel(_ receipt: OperationReceipt) throws -> OperationReceipt {
+        let (event, current) = try locateTarget(receipt)
+        var result = receipt
+        let previous = snapshot(event)
+        result.previous = previous
+        result.eventID = current.id
+        try store.remove(event, span: .thisEvent, commit: true)
+        if let leftover = store.event(withIdentifier: current.id), leftover.status != .canceled,
+           Self.match(leftover).startLocal == current.startLocal {
+            result.status = "uncertain"; result.message = "取消已提交，但这条日程仍能读到，请在系统日历核对。"
+            return result
+        }
+        result.status = "saved"; result.fingerprint = nil
+        result.message = "已取消〈\(previous.title)〉\(previous.when)。"
+            + (current.partOfSeries ? "仅取消了重复日程的这一次。" : "可在近期记录中恢复。")
+        return result
     }
     private func saveEvent(_ receipt: OperationReceipt, allDayReminder: AllDayReminder) throws -> OperationReceipt {
         let draft = receipt.draft
@@ -202,7 +331,13 @@ final class CalendarRepository: CalendarAccess {
         return result
     }
     func undo(_ receipt: OperationReceipt) throws -> OperationReceipt {
-        guard receipt.status == "saved", let originalFingerprint = receipt.fingerprint else { throw AppError("这条记录无法安全自动撤销，请在系统日历处理。") }
+        guard receipt.status == "saved" else { throw AppError("这条记录无法安全自动撤销，请在系统日历处理。") }
+        switch receipt.draft.intent {
+        case .update: return try undoUpdate(receipt)
+        case .cancel: return try undoCancel(receipt)
+        case .add: break
+        }
+        guard let originalFingerprint = receipt.fingerprint else { throw AppError("这条记录无法安全自动撤销，请在系统日历处理。") }
         if receipt.draft.usesReminders {
             guard hasReminderAccess else { throw AppError("需要提醒事项权限。") }
             guard let id = receipt.eventID, let saved = store.calendarItem(withIdentifier: id) as? EKReminder,
@@ -223,6 +358,48 @@ final class CalendarRepository: CalendarAccess {
         try store.remove(event, span: series ? .futureEvents : .thisEvent, commit: true)
         var result = receipt; result.status = "undone"
         result.message = series ? "已撤销本应用创建的整个重复日程。" : "已撤销本应用创建且未被修改的事件。"
+        return result
+    }
+    /// Puts a moved event back, but only if it is still exactly where this app left it.
+    private func undoUpdate(_ receipt: OperationReceipt) throws -> OperationReceipt {
+        guard hasAccess else { throw AppError("需要日历权限。") }
+        guard let previous = receipt.previous, let id = receipt.eventID, let fingerprint = receipt.fingerprint,
+              let event = store.event(withIdentifier: id), event.status != .canceled else {
+            throw AppError("找不到被修改的日程，已停止撤销。")
+        }
+        guard self.fingerprint(event) == fingerprint else { throw AppError("这条日程在修改之后又被改动过，已停止撤销。") }
+        _ = try calendar(event.calendar.calendarIdentifier)
+        event.startDate = try Temporal.parse(previous.startLocal, timeZone: previous.timeZone, allDay: previous.allDay)
+        event.endDate = try Temporal.parse(previous.endLocal, timeZone: previous.timeZone, allDay: previous.allDay)
+        event.isAllDay = previous.allDay
+        event.timeZone = TimeZone(identifier: previous.timeZone)
+        event.location = previous.location.isEmpty ? nil : previous.location
+        try store.save(event, span: .thisEvent, commit: true)
+        var result = receipt; result.status = "undone"
+        result.message = "已把〈\(previous.title)〉改回 \(previous.when)。"
+        return result
+    }
+    /// Recreates a cancelled event from the snapshot taken before it was removed.
+    private func undoCancel(_ receipt: OperationReceipt) throws -> OperationReceipt {
+        guard hasAccess else { throw AppError("需要日历权限。") }
+        guard let previous = receipt.previous else { throw AppError("没有保留原日程内容，无法恢复。") }
+        guard !previous.partOfSeries else { throw AppError("重复日程的单次取消无法在这里恢复，请在系统日历处理。") }
+        if let id = receipt.eventID, let existing = store.event(withIdentifier: id), existing.status != .canceled {
+            throw AppError("这条日程已经存在，无需恢复。")
+        }
+        let target = try calendar(previous.calendarID)
+        let event = EKEvent(eventStore: store)
+        event.calendar = target; event.title = previous.title
+        event.startDate = try Temporal.parse(previous.startLocal, timeZone: previous.timeZone, allDay: previous.allDay)
+        event.endDate = try Temporal.parse(previous.endLocal, timeZone: previous.timeZone, allDay: previous.allDay)
+        event.isAllDay = previous.allDay
+        event.timeZone = TimeZone(identifier: previous.timeZone)
+        event.location = previous.location.isEmpty ? nil : previous.location
+        event.notes = previous.notes.isEmpty ? nil : previous.notes
+        try store.save(event, span: .thisEvent, commit: true)
+        var result = receipt; result.status = "undone"; result.eventID = event.eventIdentifier
+        // The restored event is a new entry: alarms and invitees from the original are not recreated.
+        result.message = "已按取消前的内容重新建立〈\(previous.title)〉\(previous.when)；提醒等其他设置需要自行核对。"
         return result
     }
     private func find(_ receipt: OperationReceipt) throws -> [EKEvent] {

@@ -132,6 +132,12 @@ public struct ExtractedEvent: Codable, Equatable, Sendable {
     public var repeatDays: [Int]?
     public var repeatUntil: String?
     public var repeatCount: Int?
+    /// "add", "update" or "cancel": what the message asks for. Anything else is treated as "add".
+    public var action: String?
+    /// What the message calls the existing item, and when it says that item was. Matching happens
+    /// on this machine: calendar titles are never sent to the model.
+    public var targetTitle: String?
+    public var targetStartLocal: String?
     /// Filled in locally after a timeframe is resolved; shown as a review note, never sent to the model.
     public var timingNote: String?
     public init(title: String = "新日程", startLocal: String? = nil, endLocal: String? = nil,
@@ -141,6 +147,7 @@ public struct ExtractedEvent: Codable, Equatable, Sendable {
                 extraReminderMinutes: [Int]? = nil, kind: String? = nil,
                 dueDay: String? = nil, dayPart: String? = nil, lunarDate: String? = nil, isDeadline: Bool? = nil,
                 repeatRule: String? = nil, repeatDays: [Int]? = nil, repeatUntil: String? = nil, repeatCount: Int? = nil,
+                action: String? = nil, targetTitle: String? = nil, targetStartLocal: String? = nil,
                 timingNote: String? = nil) {
         self.title = title; self.startLocal = startLocal; self.endLocal = endLocal
         self.timeZone = timeZone; self.allDay = allDay; self.location = location; self.notes = notes
@@ -150,6 +157,7 @@ public struct ExtractedEvent: Codable, Equatable, Sendable {
         self.dueDay = dueDay; self.dayPart = dayPart; self.lunarDate = lunarDate; self.isDeadline = isDeadline
         self.repeatRule = repeatRule; self.repeatDays = repeatDays
         self.repeatUntil = repeatUntil; self.repeatCount = repeatCount
+        self.action = action; self.targetTitle = targetTitle; self.targetStartLocal = targetStartLocal
         self.timingNote = timingNote
     }
 }
@@ -163,6 +171,7 @@ extension ExtractedEvent {
     }
     /// A task is something to finish, not an appointment; it may belong in Reminders.
     public var isTask: Bool { kind == "task" }
+    public var intent: EventAction { EventAction(rawValue: action ?? "") ?? .add }
     public var recurrence: Recurrence? { Recurrence(event: self) }
 }
 
@@ -170,6 +179,73 @@ public struct Extraction: Codable, Sendable {
     public var events: [ExtractedEvent]
     public var questions: [String]
     public init(events: [ExtractedEvent], questions: [String] = []) { self.events = events; self.questions = questions }
+}
+
+/// What a message asks the app to do with an item. Only adding may ever happen unattended.
+public enum EventAction: String, CaseIterable, Sendable {
+    case add
+    case update
+    case cancel
+    public var label: String {
+        switch self {
+        case .add: "新增"
+        case .update: "改期"
+        case .cancel: "取消"
+        }
+    }
+    public var touchesExistingEvent: Bool { self != .add }
+}
+
+/// An existing calendar event that a change message might be talking about.
+/// Found on this machine; the model never sees these titles.
+public struct CalendarMatch: Identifiable, Codable, Equatable, Sendable {
+    public var id: String
+    public var title: String
+    public var startLocal: String
+    public var endLocal: String?
+    public var allDay: Bool
+    public var timeZone: String
+    public var calendarName: String
+    public var partOfSeries: Bool
+    /// Set when this event cannot be changed from here; the reason is shown instead of acting.
+    public var blockedReason: String?
+    public var isEditable: Bool { blockedReason == nil }
+    public init(id: String, title: String, startLocal: String, endLocal: String?, allDay: Bool,
+                timeZone: String, calendarName: String, partOfSeries: Bool, blockedReason: String? = nil) {
+        self.id = id; self.title = title; self.startLocal = startLocal; self.endLocal = endLocal
+        self.allDay = allDay; self.timeZone = timeZone; self.calendarName = calendarName
+        self.partOfSeries = partOfSeries; self.blockedReason = blockedReason
+    }
+    public var when: String {
+        let day = String(startLocal.prefix(10))
+        guard !allDay, startLocal.count > 10 else { return day + " 全天" }
+        return day + " " + String(startLocal.dropFirst(11).prefix(5))
+    }
+    public var display: String { "\(title) · \(when) · \(calendarName)" + (partOfSeries ? " · 重复日程的这一次" : "") }
+}
+
+/// Enough of an existing event to put it back the way it was.
+public struct EventSnapshot: Codable, Equatable, Sendable {
+    public var title: String
+    public var startLocal: String
+    public var endLocal: String
+    public var allDay: Bool
+    public var timeZone: String
+    public var location: String
+    public var notes: String
+    public var calendarID: String
+    public var partOfSeries: Bool
+    public init(title: String, startLocal: String, endLocal: String, allDay: Bool, timeZone: String,
+                location: String, notes: String, calendarID: String, partOfSeries: Bool) {
+        self.title = title; self.startLocal = startLocal; self.endLocal = endLocal; self.allDay = allDay
+        self.timeZone = timeZone; self.location = location; self.notes = notes
+        self.calendarID = calendarID; self.partOfSeries = partOfSeries
+    }
+    public var when: String {
+        let day = String(startLocal.prefix(10))
+        guard !allDay, startLocal.count > 10 else { return day + " 全天" }
+        return day + " " + String(startLocal.dropFirst(11).prefix(5))
+    }
 }
 
 public struct Draft: Identifiable, Codable, Equatable, Sendable {
@@ -183,6 +259,11 @@ public struct Draft: Identifiable, Codable, Equatable, Sendable {
     public var conflicts: [String] = []
     /// Optional so drafts stored by earlier builds keep decoding as calendar events.
     public var toReminders: Bool?
+    /// Existing events this change message might mean, and the one the user picked.
+    public var matches: [CalendarMatch]?
+    public var targetID: String?
+    public var intent: EventAction { event.intent }
+    public var target: CalendarMatch? { (matches ?? []).first { $0.id == targetID } }
     public var usesReminders: Bool { toReminders == true }
     public init(event: ExtractedEvent, calendarID: String, toReminders: Bool? = nil) {
         self.event = event; self.calendarID = calendarID; self.toReminders = toReminders
@@ -219,6 +300,8 @@ public struct OperationReceipt: Codable, Identifiable, Sendable {
     public var fingerprint: String?
     public var warning: String?
     public var message: String
+    /// The state of an existing event before this operation changed or removed it.
+    public var previous: EventSnapshot?
     public init(id: UUID = UUID(), batchID: UUID, draft: Draft, status: String = "prepared") {
         self.id = id; self.batchID = batchID; self.draft = draft; self.status = status
         createdAt = Date(); message = ""
