@@ -259,6 +259,70 @@ enum WorkflowChecks {
                 }
             }
         }
+        // A group-chat chase-up carries no clock time: the timeframe is resolved locally and stays addable.
+        for mode in ["background", "confirm"] {
+            let hintCalendar = FixtureCalendar()
+            var calls = 0, hides = 0, hintAlerts = 0
+            let hintModel = AppModel(directory: root.appendingPathComponent("dueHint-" + mode), calendar: hintCalendar,
+                                     readKey: { _ in "fixture" }, extractor: { _, _, _, now, zone, _ in
+                calls += 1
+                // Mirrors LLMClient.extract, which resolves the timeframe against the same reference clock.
+                return TimingResolver.apply(to: Extraction(events: [.init(title: "办理团组织关系转入", startLocal: nil, endLocal: nil,
+                                                                         timeZone: zone, reminderMinutes: 0, missing: ["具体时间"],
+                                                                         source: "请尽快办理", dueHint: "asap")]),
+                                            now: now, fallbackTimeZone: zone)
+            }, integrateSystem: false)
+            hintModel.preferences.calendarID = "fixture-calendar"
+            hintModel.preferences.runInBackground = mode == "background"
+            hintModel.preferences.confirmBeforeAdding = mode == "confirm"
+            hintModel.hidePanel = { hides += 1 }; hintModel.panelIsVisible = { hides == 0 }
+            hintModel.presentFailure = { _, _ in hintAlerts += 1 }
+            hintModel.text = "@胡家瑜 计科2631 @刘欣睿 计科2631 两位还没有办理团组织关系转入，请尽快办理"
+            hintModel.analyze()
+            await settle { !hintModel.isGenerating && (hintCalendar.saveCount > 0 || hintModel.stage == .review) }
+            await Task.yield()
+            if mode == "background" {
+                check("a chase-up with only 尽快 is added from one model call", hintCalendar.saveCount == 1 && calls == 1 && hintAlerts == 0 && hintModel.stage == .input)
+            } else {
+                check("a resolved timeframe reaches confirmation with its origin visible",
+                      hintModel.stage == .review && hintCalendar.saveCount == 0 && hintModel.canWrite
+                      && DraftValidator.reviewNotes(hintModel.drafts[0]).contains { $0.contains("尽快") })
+            }
+        }
+        let quickModel = AppModel(directory: root.appendingPathComponent("quickTime"), calendar: FixtureCalendar(), integrateSystem: false)
+        quickModel.preferences.calendarID = "fixture-calendar"
+        quickModel.preferences.checkConflicts = false
+        let undated = Draft(event: .init(title: "交材料", startLocal: nil, timeZone: "Asia/Shanghai", reminderMinutes: nil, missing: ["具体时间"]), calendarID: "fixture-calendar")
+        quickModel.drafts = [undated]; quickModel.stage = .review
+        quickModel.applyQuickTime(.tomorrow, to: undated.id)
+        check("one tap fills a missing time locally and leaves the draft addable",
+              quickModel.drafts[0].event.startLocal != nil && quickModel.drafts[0].event.missing.isEmpty
+              && quickModel.drafts[0].event.isPointReminder && quickModel.canWrite && !quickModel.drafts[0].reviewed)
+        check("the local timing choice explains itself in the review note",
+              DraftValidator.reviewNotes(quickModel.drafts[0]).contains { $0.contains("明天") })
+        let filled = quickModel.drafts[0].event
+        quickModel.isDemo = true
+        quickModel.applyQuickTime(.asap, to: undated.id)
+        check("the interface example cannot be edited by the timing shortcuts", quickModel.drafts[0].event == filled)
+        quickModel.isDemo = false
+        let attachmentModel = AppModel(directory: root.appendingPathComponent("visionGate"), calendar: FixtureCalendar(),
+                                       readKey: { _ in "fixture" }, extractor: { _, _, _, _, _, _ in Extraction(events: []) }, integrateSystem: false)
+        attachmentModel.text = "看附件"
+        let noticeView = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        noticeView.string = "教务通知：请各班在本周内完成学业指导会的报名登记，逾期不再受理。"
+        attachmentModel.attachments = [Attachment(name: "notice.pdf", data: noticeView.dataWithPDF(inside: noticeView.bounds),
+                                                  kind: "pdf", pageCount: 1, firstPage: 1, lastPage: 1,
+                                                  hasTextLayer: true, sendAsText: true)]
+        var gateAlerts: [String] = []
+        attachmentModel.presentFailure = { title, _ in gateAlerts.append(title) }
+        attachmentModel.analyze()
+        await settle { !attachmentModel.isGenerating }
+        check("a text PDF does not require a verified vision model", !gateAlerts.contains("无法开始生成"))
+        attachmentModel.attachments[0].sendAsText = false
+        gateAlerts = []
+        attachmentModel.analyze()
+        await settle { !attachmentModel.isGenerating }
+        check("a rasterized PDF still requires a verified vision model", gateAlerts == ["无法开始生成"])
         print("\n\(passed) workflow checks passed, \(failed) failed. Injected model and calendar only; no network, Keychain or real calendar access.")
         return failed == 0 ? 0 : 1
     }

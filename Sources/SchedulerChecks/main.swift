@@ -156,5 +156,91 @@ check("nonexistent custom reminder clock time is not silently shifted") {
 check("invalid custom reminder cannot overflow date arithmetic") {
     rejects { _ = try Temporal.allDayAlarm(start: now, timeZone: zone, reminder: AllDayReminder(daysBefore: Int.max)) }
 }
+
+// Relative timeframes: the model only classifies the wording, this machine picks the instant.
+func resolved(_ hint: DueHint, _ localNow: String, zone: String = "Asia/Shanghai") throws -> String {
+    try hint.resolve(now: try Temporal.parse(localNow, timeZone: zone, allDay: false), timeZone: zone).startLocal
+}
+check("尽快 rounds up to the next half hour an hour out") { try resolved(.asap, "2026-09-22T14:20:00") == "2026-09-22T15:30:00" }
+check("尽快 rolls past the half hour to the next hour") { try resolved(.asap, "2026-09-22T14:40:00") == "2026-09-22T16:00:00" }
+check("尽快 before dawn waits for the working day") { try resolved(.asap, "2026-09-22T06:10:00") == "2026-09-22T09:00:00" }
+check("尽快 late at night moves to tomorrow morning") { try resolved(.asap, "2026-09-22T22:10:00") == "2026-09-23T09:00:00" }
+check("今天 keeps a late slot on the same day") { try resolved(.today, "2026-09-22T21:05:00") == "2026-09-22T22:30:00" }
+check("今晚 uses the evening slot") { try resolved(.tonight, "2026-09-22T14:20:00") == "2026-09-22T20:00:00" }
+check("今晚 after the evening slot stays this evening") { try resolved(.tonight, "2026-09-22T20:30:00") == "2026-09-22T21:30:00" }
+check("明天 uses tomorrow morning") { try resolved(.tomorrow, "2026-09-22T14:20:00") == "2026-09-23T09:00:00" }
+check("本周内 lands on Friday morning") { try resolved(.thisWeek, "2026-09-22T14:20:00") == "2026-09-25T09:00:00" }
+check("本周内 on Friday does not wait a week") { try resolved(.thisWeek, "2026-09-25T14:20:00") == "2026-09-25T15:30:00" }
+check("周末 lands on Saturday morning") { try resolved(.weekend, "2026-09-22T14:20:00") == "2026-09-26T10:00:00" }
+check("周末 on Saturday afternoon moves to Sunday") { try resolved(.weekend, "2026-09-26T14:20:00") == "2026-09-27T10:00:00" }
+check("下周 starts on the following Monday even when today is Monday") { try resolved(.nextWeek, "2026-09-21T08:30:00") == "2026-09-28T09:00:00" }
+check("月底 lands on the last day of the month") { try resolved(.monthEnd, "2026-09-22T14:20:00") == "2026-09-30T09:00:00" }
+check("月底 on the last day falls back to a slot today") { try resolved(.monthEnd, "2026-09-30T10:00:00") == "2026-09-30T11:00:00" }
+check("every hint resolves to a future instant the writer accepts, including across DST") {
+    let zone = "America/New_York"
+    var base = try Temporal.parse("2026-03-07T00:00:00", timeZone: zone, allDay: false)
+    for _ in 0..<96 {
+        for hint in DueHint.allCases {
+            let value = try hint.resolve(now: base, timeZone: zone)
+            let start = try Temporal.parse(value.startLocal, timeZone: zone, allDay: false)
+            guard start > base, !value.note.isEmpty else { return false }
+        }
+        base = base.addingTimeInterval(1800)
+    }
+    return true
+}
+check("unknown timeframe words are not invented into a time") { DueHint.parse("someday") == nil && DueHint.parse(nil) == nil }
+
+let hintedNow = try Temporal.parse("2026-09-22T14:20:00", timeZone: zone, allDay: false)
+func resolveEvent(_ event: ExtractedEvent) -> ExtractedEvent { TimingResolver.apply(to: event, now: hintedNow, fallbackTimeZone: zone) }
+let chase = ExtractedEvent(title: "办理团组织关系转入", startLocal: nil, endLocal: nil, timeZone: zone, reminderMinutes: 0,
+                           missing: ["具体时间"], source: "请尽快办理", dueHint: "asap")
+check("a chase-up note with only 尽快 becomes an addable point reminder") {
+    let event = resolveEvent(chase)
+    let draft = Draft(event: event, calendarID: "test-only")
+    return event.startLocal == "2026-09-22T15:30:00" && event.endLocal == nil && event.isPointReminder && event.reminderMinutes == 0
+        && event.missing.isEmpty && event.assumptions.isEmpty && DraftValidator.errors(draft, now: hintedNow).isEmpty
+        && DraftValidator.canAddAutomatically([draft], questions: [], now: hintedNow)
+}
+check("a resolved timeframe stays visible as a review note") {
+    let draft = Draft(event: resolveEvent(chase), calendarID: "test-only")
+    return DraftValidator.reviewNotes(draft, now: hintedNow).count == 1 && DraftValidator.reviewNotes(draft, now: hintedNow)[0].contains("尽快")
+}
+check("a resolved timeframe does not clear unrelated missing information") {
+    var event = chase; event.missing = ["截图的来源日期"]
+    let resolvedEvent = resolveEvent(event)
+    return resolvedEvent.startLocal != nil && resolvedEvent.missing == ["截图的来源日期"]
+        && !DraftValidator.errorsAfterReview(Draft(event: resolvedEvent, calendarID: "test-only"), now: hintedNow).isEmpty
+}
+check("an explicit time always wins over a timeframe word") {
+    var event = chase; event.startLocal = "2030-06-18T14:00:00"; event.missing = []
+    let resolvedEvent = resolveEvent(event)
+    return resolvedEvent.startLocal == "2030-06-18T14:00:00" && resolvedEvent.dueHint == nil && resolvedEvent.timingNote == nil
+}
+check("an all-day range is never rewritten into a point reminder") {
+    var event = chase; event.allDay = true; event.startLocal = nil
+    return resolveEvent(event).startLocal == nil && resolveEvent(event).dueHint == nil
+}
+check("an unresolved timeframe leaves the draft blocked instead of guessing") {
+    var event = chase; event.dueHint = "someday"
+    let resolvedEvent = resolveEvent(event)
+    return resolvedEvent.startLocal == nil && resolvedEvent.dueHint == nil
+        && !DraftValidator.errorsAfterReview(Draft(event: resolvedEvent, calendarID: "test-only"), now: hintedNow).isEmpty
+}
+let hintJSON = validJSON.replacingOccurrences(of: #""startLocal":"2030-06-18T14:00:00""#, with: #""startLocal":null,"dueHint":"asap""#)
+check("the contract accepts a declared timeframe") { try ExtractionDecoder.decode(hintJSON).events.first?.dueHint == "asap" }
+check("the contract still rejects keys next to the timeframe") {
+    rejects { _ = try ExtractionDecoder.decode(hintJSON.replacingOccurrences(of: #""dueHint":"asap""#, with: #""dueHint":"asap","calendarID":"attacker""#)) }
+}
+check("a model-supplied resolution note is ignored") {
+    try ExtractionDecoder.decode(validJSON.replacingOccurrences(of: #""source":"会议""#, with: #""source":"会议","dueHint":null"#)).events.first?.timingNote == nil
+}
+check("drafts stored by earlier builds still decode without the timeframe fields") {
+    var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(event)) as! [String: Any]
+    for key in ["dueHint", "timingNote"] { old.removeValue(forKey: key) }
+    let restored = try JSONDecoder().decode(ExtractedEvent.self, from: JSONSerialization.data(withJSONObject: old))
+    return restored.dueHint == nil && restored.timingNote == nil && restored.startLocal == event.startLocal
+}
+
 print("\n\(passed) passed, \(failed) failed. Offline checks only; no API keys or calendars accessed.")
 if failed > 0 { exit(1) }

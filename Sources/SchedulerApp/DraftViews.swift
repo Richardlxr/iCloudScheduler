@@ -21,7 +21,9 @@ struct DraftReviewView: View {
                                 if model.drafts.count > 1 || !draft.selected { Toggle("选择 \(draft.event.title)", isOn: $draft.selected).labelsHidden().toggleStyle(.checkbox) }
                                 VStack(alignment: .leading, spacing: 7) {
                                     Text(draft.event.title).font(.system(size: 16, weight: .semibold))
-                                    Label(displayTime(draft.event), systemImage: "clock").font(.system(size: 13, weight: .medium))
+                                    Label(displayTime(draft.event), systemImage: draft.event.startLocal == nil ? "clock.badge.questionmark" : "clock")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(draft.event.startLocal == nil ? Color.orange : Color.primary)
                                     HStack(spacing: 10) {
                                         if !draft.event.location.isEmpty { Label(draft.event.location, systemImage: "mappin.and.ellipse") }
                                         if draft.event.allDay { Label("全天提醒按设置", systemImage: "bell") }
@@ -38,6 +40,9 @@ struct DraftReviewView: View {
                                     Text(draft.conflicts.joined(separator: "、")).font(.caption)
                                 }.foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(10).background(Color.orange.opacity(0.09), in: RoundedRectangle(cornerRadius: 7))
+                            }
+                            if draft.event.startLocal == nil && !model.isDemo {
+                                QuickTimeRow(model: model, draftID: draft.id)
                             }
                             let notes = DraftValidator.reviewNotes(draft)
                             if !notes.isEmpty {
@@ -97,6 +102,25 @@ struct DraftReviewView: View {
         let startDay = String(start.prefix(10)), endDay = String(end.prefix(10))
         let startClock = String(start.dropFirst(11).prefix(5)), endClock = String(end.dropFirst(11).prefix(5))
         return startDay == endDay ? "\(startDay)  \(startClock) – \(endClock)" : "\(startDay) \(startClock) → \(endDay) \(endClock)"
+    }
+}
+
+/// One tap sets a concrete reminder time on this machine; no model call and no extra cost.
+struct QuickTimeRow: View {
+    @ObservedObject var model: AppModel
+    let draftID: UUID
+    private let hints: [DueHint] = [.asap, .tonight, .tomorrow, .thisWeek]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("没有具体时间，先选一个提醒时机：").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 7) {
+                ForEach(hints, id: \.self) { hint in
+                    Button(hint.label) { model.applyQuickTime(hint, to: draftID) }
+                        .buttonStyle(SuggestionStyle()).help("按“\(hint.label)”在本机换算成一个提醒时刻")
+                }
+                Spacer(minLength: 0)
+            }
+        }.disabled(model.isGenerating || model.writing)
     }
 }
 

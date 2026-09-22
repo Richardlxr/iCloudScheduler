@@ -7,9 +7,9 @@ enum AppStyle {
 }
 
 extension View {
-    func appCard(border: Color = AppStyle.border, radius: CGFloat = 12) -> some View {
+    func appCard(border: Color = AppStyle.border, radius: CGFloat = 12, lineWidth: CGFloat = 0.5) -> some View {
         background(AppStyle.surface, in: RoundedRectangle(cornerRadius: radius))
-            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(border, lineWidth: 0.5))
+            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(border, lineWidth: lineWidth))
     }
 }
 

@@ -107,14 +107,21 @@ public struct ExtractedEvent: Codable, Equatable, Sendable {
     public var missing: [String]
     public var assumptions: [String]
     public var source: String
+    /// Relative timeframe reported by the model when the text gives no clock time.
+    /// Optional on the wire and in storage so drafts written by earlier builds still decode.
+    public var dueHint: String?
+    /// Filled in locally after a hint is resolved; shown as a review note, never sent to the model.
+    public var timingNote: String?
     public init(title: String = "新日程", startLocal: String? = nil, endLocal: String? = nil,
                 timeZone: String = TimeZone.current.identifier, allDay: Bool = false,
                 location: String = "", notes: String = "", reminderMinutes: Int? = 15,
-                missing: [String] = [], assumptions: [String] = [], source: String = "手动创建") {
+                missing: [String] = [], assumptions: [String] = [], source: String = "手动创建",
+                dueHint: String? = nil, timingNote: String? = nil) {
         self.title = title; self.startLocal = startLocal; self.endLocal = endLocal
         self.timeZone = timeZone; self.allDay = allDay; self.location = location; self.notes = notes
         self.reminderMinutes = reminderMinutes; self.missing = missing
         self.assumptions = assumptions; self.source = source
+        self.dueHint = dueHint; self.timingNote = timingNote
     }
 }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import UniformTypeIdentifiers
 import EventKit
 import ServiceManagement
 import SchedulerCore
@@ -171,12 +172,23 @@ final class AppModel: ObservableObject {
         }
         if panelIsVisible() { hidePanel?() }
     }
+    var inputHeight: CGFloat {
+        var height: CGFloat = 318
+        if errorMessage != nil { height += 62 }
+        let visionReady = activeConfig.imageVerified != nil
+        for attachment in attachments {
+            height += attachment.kind == "pdf" ? 98 : 60
+            if attachment.requiresVision && !visionReady { height += 24 }
+        }
+        return min(600, height)
+    }
     var reviewHeight: CGFloat {
         var height: CGFloat = 230
         for draft in drafts {
             let notes = DraftValidator.reviewNotes(draft)
             let lines = notes.joined().count / 46 + (notes.isEmpty ? 0 : 1)
             height += 270 + CGFloat(lines) * 20
+            if draft.event.startLocal == nil { height += 40 }
             if !draft.conflicts.isEmpty { height += 52 }
             if !DraftValidator.errorsAfterReview(draft).isEmpty { height += 45 }
         }
@@ -234,8 +246,8 @@ final class AppModel: ObservableObject {
         let key: String
         do { key = try readKey(config.id); guard !key.isEmpty else { throw AppError("先在设置中保存 API Key，再生成日程。") } }
         catch { reportFailure("无法开始生成", error.localizedDescription); return }
-        if attachments.contains(where: { $0.kind == "image" || $0.kind == "pdf" }) && config.imageVerified == nil {
-            reportFailure("无法开始生成", "当前配置的图片能力尚未验证。请在模型设置中运行“测试图片”，通过后可处理图片和 PDF。")
+        if attachments.contains(where: \.requiresVision) && config.imageVerified == nil {
+            reportFailure("无法开始生成", "当前配置的图片能力尚未验证。请在模型设置中运行“测试图片”，通过后可处理图片和需要转图的 PDF。")
             return
         }
         generation?.cancel(); let token = UUID(); revision = token
@@ -306,7 +318,7 @@ final class AppModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription; return }
         let token = UUID(); revision = token
         let files = original == nil ? attachments : []
-        guard files.isEmpty || config.imageVerified != nil else { errorMessage = "请先验证当前模型的图片能力。"; return }
+        guard !files.contains(where: \.requiresVision) || config.imageVerified != nil else { errorMessage = "请先验证当前模型的图片能力。"; return }
         let zone = original?.event.timeZone ?? preferences.timeZone
         let now = Date(), reminder = preferences.reminderMinutes, target = preferences.calendarID
         let sourceText = text
@@ -355,13 +367,29 @@ final class AppModel: ObservableObject {
         }
         resizePanel?()
     }
+    /// Applies a relative timeframe locally: no model call, same resolver the extraction path uses.
+    func applyQuickTime(_ hint: DueHint, to id: UUID) {
+        guard !isDemo, !writing, !isGenerating, editingID == nil,
+              let index = drafts.firstIndex(where: { $0.id == id }) else { return }
+        var event = drafts[index].event
+        event.allDay = false; event.startLocal = nil; event.endLocal = nil
+        event.timeZone = TimeZone(identifier: event.timeZone) == nil ? preferences.timeZone : event.timeZone
+        event.dueHint = hint.rawValue
+        let resolved = TimingResolver.apply(to: event, now: Date(), fallbackTimeZone: preferences.timeZone)
+        guard resolved.startLocal != nil else { errorMessage = "无法换算“\(hint.label)”，请手动填写时间。"; return }
+        drafts[index].event = resolved
+        drafts[index].reviewed = false; drafts[index].conflictAcknowledged = false
+        errorMessage = nil
+        refreshConflicts(notify: false); persistDraft(); resizePanel?()
+        activityLabel = "已按“\(hint.label)”设定提醒，请确认"
+    }
     func addPastedImage(_ data: Data) {
         guard attachments.count < 5, data.count <= 20 * 1024 * 1024 else { errorMessage = "图片超过 20 MB 或附件超过 5 个。"; return }
         inputChanged(); attachments.append(.init(name: "粘贴的图片", data: data, kind: "image")); resizePanel?()
     }
     func chooseFiles() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.png, .jpeg, .heic, .webP, .pdf, .plainText]
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .webP, .pdf, .plainText, .text] + [UTType(filenameExtension: "md")].compactMap { $0 }
         if panel.runModal() == .OK { addAttachments(panel.urls) }
     }
     func refreshCalendars() {

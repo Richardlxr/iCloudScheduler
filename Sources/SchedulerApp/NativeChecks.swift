@@ -104,6 +104,34 @@ enum NativeChecks {
             old.createdAt = Date(timeIntervalSince1970: 0); try store.record(old); try store.prune()
             return try !store.receipts().contains { $0.id == old.id }
         }
+        func board(_ name: String) -> NSPasteboard {
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.icloudscheduler.check.\(name)"))
+            pasteboard.clearContents(); return pasteboard
+        }
+        check("input-method composition is reported so the placeholder can step aside") {
+            let input = CaptureTextView(); var states: [Bool] = []
+            input.compositionChanged = { states.append($0) }
+            input.setMarkedText("ban hui", selectedRange: NSRange(location: 7, length: 0), replacementRange: NSRange(location: 0, length: 0))
+            guard states == [true], input.string == "ban hui" else { return false }
+            input.insertText("班会", replacementRange: input.markedRange())
+            return states == [true, false] && input.string == "班会"
+        }
+        check("a dropped file becomes an attachment instead of a pasted path") {
+            let input = CaptureTextView(); var dropped: [URL] = []
+            input.dropFiles = { dropped = $0 }
+            let file = directory.appendingPathComponent("synthetic-drop.txt")
+            try Data("synthetic".utf8).write(to: file)
+            let pasteboard = board("drop"); pasteboard.writeObjects([file as NSURL])
+            let handled = input.readSelection(from: pasteboard)
+            return handled && dropped == [file] && input.string.isEmpty
+        }
+        check("ordinary text keeps pasting as text") {
+            let input = CaptureTextView(); var dropped: [URL] = []
+            input.dropFiles = { dropped = $0 }
+            let pasteboard = board("text"); pasteboard.setString("明天下午三点开会", forType: .string)
+            let handled = input.readSelection(from: pasteboard)
+            return handled && dropped.isEmpty && input.string == "明天下午三点开会"
+        }
         var jpeg = Data()
         check("native image encoding and normalization") {
             jpeg = try AttachmentProcessor.probeImage(code: "A42F19")
@@ -142,6 +170,32 @@ enum NativeChecks {
             guard let imageData = result.images.first?.jpeg, let bitmap = NSBitmapImageRep(data: imageData) else { return false }
             try imageData.write(to: directory.appendingPathComponent("rotated-pdf-page.jpg"))
             return bitmap.pixelsHigh > bitmap.pixelsWide
+        }
+        check("a text PDF is read as text and needs no vision model") {
+            let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+            view.string = "教务通知：请各班在本周内完成学业指导会的报名登记，逾期不再受理。"
+            let data = view.dataWithPDF(inside: view.bounds)
+            guard let document = PDFDocument(data: data), AttachmentProcessor.hasUsableText(document) else { return false }
+            let attachment = Attachment(name: "notice.pdf", data: data, kind: "pdf", pageCount: 1, firstPage: 1, lastPage: 1,
+                                        hasTextLayer: true, sendAsText: true)
+            let result = try AttachmentProcessor.prepare(text: "", attachments: [attachment])
+            return result.images.isEmpty && result.text.contains("学业指导会") && result.text.contains("【附件：notice.pdf 第 1 页】")
+                && !attachment.requiresVision
+        }
+        check("a scanned PDF keeps the rendered page and its vision requirement") {
+            guard let document = PDFDocument(data: pdfData) else { return false }
+            let scanned = Attachment(name: "scan.pdf", data: pdfData, kind: "pdf", pageCount: 2, firstPage: 1, lastPage: 1)
+            return !AttachmentProcessor.hasUsableText(document) && scanned.requiresVision
+        }
+        check("text mode is refused when the selected pages hold no words") {
+            let empty = Attachment(name: "scan.pdf", data: pdfData, kind: "pdf", pageCount: 2, firstPage: 1, lastPage: 1,
+                                   hasTextLayer: true, sendAsText: true)
+            do { _ = try AttachmentProcessor.prepare(text: "", attachments: [empty]); return false }
+            catch { return true }
+        }
+        check("text attachments carry the documented marker") {
+            let result = try AttachmentProcessor.prepare(text: "原文", attachments: [Attachment(name: "notice.txt", data: Data("下周一交材料".utf8), kind: "txt")])
+            return result.images.isEmpty && result.text.contains("【附件：notice.txt】") && result.text.contains("下周一交材料")
         }
         check("invalid PDF page range is rejected") {
             do { _ = try AttachmentProcessor.prepare(text: "", attachments: [Attachment(name: "test.pdf", data: pdfData, kind: "pdf", pageCount: 2, firstPage: 0, lastPage: 2)]); return false }

@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let anchor = saved.flatMap { $0.count == 2 ? NSPoint(x: $0[0], y: $0[1]) : nil }
         let screens = NSScreen.screens.map(\.visibleFrame)
         let fallback = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let height: CGFloat = model.stage == .input ? (model.attachments.isEmpty ? 320 : 445) : model.stage == .analyzing ? 245 : model.stage == .review ? model.reviewHeight : 440
+        let height: CGFloat = model.stage == .input ? model.inputHeight : model.stage == .analyzing ? 245 : model.stage == .review ? model.reviewHeight : 440
         panel.setContentSize(NSSize(width: 480, height: height))
         panel.setFrame(PanelPlacement.frame(size: panel.frame.size, anchor: anchor, screens: screens, fallback: fallback), display: true)
     }

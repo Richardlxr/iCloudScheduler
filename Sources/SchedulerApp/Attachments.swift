@@ -12,7 +12,20 @@ struct Attachment: Identifiable, @unchecked Sendable {
     var pageCount: Int = 1
     var firstPage: Int = 1
     var lastPage: Int = 1
-    var label: String { kind == "pdf" ? "\(pageCount) 页 · 发送第 \(firstPage)–\(lastPage) 页" : ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file) }
+    /// A PDF with a usable text layer is sent as text: more accurate than a rendered page, and no vision model needed.
+    var hasTextLayer = false
+    var sendAsText = false
+    var preview: NSImage?
+    /// Only rasterized content needs a verified vision model.
+    var requiresVision: Bool { kind == "image" || (kind == "pdf" && !sendAsText) }
+    var size: String { ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file) }
+    var label: String {
+        switch kind {
+        case "pdf": "\(size) · 第 \(firstPage)–\(lastPage) 页 · " + (sendAsText ? "按文本发送" : "转成图片发送")
+        case "image": "\(size) · 图片"
+        default: "\(size) · 文本"
+        }
+    }
 }
 
 enum AttachmentProcessor {
@@ -28,11 +41,44 @@ enum AttachmentProcessor {
         guard data.count <= 20 * 1024 * 1024 else { throw AppError("文件超过 20 MB。") }
         let kind = ["txt", "md", "pdf"].contains(suffix) ? suffix : "image"
         var attachment = Attachment(name: url.lastPathComponent, data: data, kind: kind)
-        if kind == "pdf" {
+        switch kind {
+        case "pdf":
             guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.pageCount > 0 else { throw AppError("PDF 无法读取或有密码，请先解锁。") }
             attachment.pageCount = pdf.pageCount; attachment.lastPage = min(pdf.pageCount, 5)
+            attachment.hasTextLayer = hasUsableText(pdf)
+            attachment.sendAsText = attachment.hasTextLayer
+            attachment.preview = thumbnail(pdf)
+        case "image":
+            _ = try normalizeImage(data)
+            attachment.preview = thumbnail(data)
+        default:
+            guard String(data: data, encoding: .utf8) != nil else { throw AppError("\(url.lastPathComponent) 不是 UTF-8 文本，请转换编码。") }
         }
         return attachment
+    }
+    /// Sampled rather than exhaustive: enough to tell a digital document from a scan without reading a whole book.
+    static func hasUsableText(_ pdf: PDFDocument) -> Bool {
+        let sampled = min(pdf.pageCount, 8)
+        var characters = 0
+        for index in 0..<sampled {
+            characters += (pdf.page(at: index)?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).count
+        }
+        return characters / max(1, sampled) >= 20
+    }
+    static func pageText(_ page: PDFPage) -> String {
+        (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    static func thumbnail(_ pdf: PDFDocument) -> NSImage? {
+        guard let page = pdf.page(at: 0) else { return nil }
+        return page.thumbnail(of: NSSize(width: 96, height: 96), for: .mediaBox)
+    }
+    static func thumbnail(_ data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                        kCGImageSourceCreateThumbnailWithTransform: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: 96]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
     }
     static func prepare(text: String, attachments: [Attachment]) throws -> PreparedInput {
         guard text.count <= 20000 else { throw AppError("文字最多 2 万字，请缩小范围。") }
@@ -41,12 +87,27 @@ enum AttachmentProcessor {
             try Task.checkCancellation()
             if attachment.kind == "txt" || attachment.kind == "md" {
                 guard let text = String(data: attachment.data, encoding: .utf8) else { throw AppError("\(attachment.name) 不是 UTF-8 文本，请转换编码。") }
-                result.text += "\n\n附件 \(attachment.name)：\n" + text
+                result.text += "\n\n【附件：\(attachment.name)】\n" + text
             } else if attachment.kind == "pdf" {
                 guard attachment.firstPage >= 1, attachment.lastPage >= attachment.firstPage,
                       attachment.lastPage <= attachment.pageCount,
                       attachment.lastPage - attachment.firstPage < 10,
                       let document = PDFDocument(data: attachment.data) else { throw AppError("PDF 页码无效，一次最多选择 10 页。") }
+                if attachment.sendAsText {
+                    var pages: [String] = []
+                    for index in (attachment.firstPage - 1)..<attachment.lastPage {
+                        try Task.checkCancellation()
+                        guard let page = document.page(at: index) else { throw AppError("无法读取 PDF 第 \(index + 1) 页。") }
+                        let text = pageText(page)
+                        if !text.isEmpty { pages.append("【附件：\(attachment.name) 第 \(index + 1) 页】\n" + text) }
+                    }
+                    guard pages.joined().count >= 20 else {
+                        throw AppError("所选 PDF 页面没有可提取的文字。请改选页面，或在附件上切换为“按图片”发送。")
+                    }
+                    result.text += "\n\n" + pages.joined(separator: "\n\n")
+                    guard result.text.count <= 20000 else { throw AppError("本次超过 2 万字，请减少附件或 PDF 页数。") }
+                    continue
+                }
                 for index in (attachment.firstPage - 1)..<attachment.lastPage {
                     try Task.checkCancellation()
                     let data: Data = try autoreleasepool {

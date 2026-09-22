@@ -79,7 +79,10 @@ public enum DraftValidator {
         return errors(confirmed, now: now, requireCalendar: requireCalendar)
     }
     public static func reviewNotes(_ draft: Draft, now: Date = Date()) -> [String] {
-        var notes = draft.event.assumptions
+        var notes: [String] = []
+        // A locally resolved timeframe is a product default: visible for review, never a model assumption.
+        if let timing = draft.event.timingNote, !timing.isEmpty { notes.append(timing) }
+        notes += draft.event.assumptions
         if let interval = try? Temporal.interval(draft.event) {
             if interval.start < now { notes.append("开始时间已过去。") }
             else if !draft.event.allDay, let minutes = draft.event.reminderMinutes, (0...10080).contains(minutes),
@@ -118,8 +121,20 @@ public enum ExtractionDecoder {
               Set(root.keys) == ["events", "questions"], let events = root["events"] as? [[String: Any]],
               events.count <= 20 else { throw AppError("模型没有返回完整的日程 JSON，或一次超过 20 项。请重试或缩小范围。") }
         let required: Set<String> = ["title", "startLocal", "endLocal", "timeZone", "allDay", "location", "notes", "reminderMinutes", "missing", "assumptions", "source"]
-        for event in events where Set(event.keys) != required { throw AppError("模型返回的日程字段不符合契约，请重新分析。") }
-        let extraction = try JSONDecoder().decode(Extraction.self, from: data)
+        // dueHint is the only tolerated addition: older profiles may omit it, and nothing else may be injected.
+        let optional: Set<String> = ["dueHint"]
+        for event in events {
+            let keys = Set(event.keys)
+            guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else {
+                throw AppError("模型返回的日程字段不符合契约，请重新分析。")
+            }
+        }
+        var extraction = try JSONDecoder().decode(Extraction.self, from: data)
+        // An unknown timeframe word is dropped rather than trusted: the draft keeps asking for a real time.
+        for index in extraction.events.indices {
+            extraction.events[index].timingNote = nil
+            if DueHint.parse(extraction.events[index].dueHint) == nil { extraction.events[index].dueHint = nil }
+        }
         guard (extraction.events.isEmpty || extraction.questions.isEmpty), extraction.questions.count <= 20, extraction.questions.allSatisfy({ $0.count <= 1000 }),
               extraction.events.allSatisfy({ $0.title.count <= 200 && $0.source.count <= 4000 && $0.notes.count <= 10000 && $0.missing.count <= 20 && $0.assumptions.count <= 20 && ($0.missing + $0.assumptions).allSatisfy({ $0.count <= 1000 }) }) else {
             throw AppError("模型输出不符合日程契约：请勿附加对话追问或超长内容。")
