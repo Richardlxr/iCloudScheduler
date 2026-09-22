@@ -47,6 +47,13 @@ public struct AppPreferences: Codable, Sendable {
     public var reminderMinutes = 15
     public var allDayReminderMinutes = 540
     public var keepDraft = true
+    /// Reminders destination for task-shaped drafts; empty until the user picks a list.
+    public var reminderListID: String?
+    public var tasksToReminders: Bool?
+    public var sendTasksToReminders: Bool {
+        get { tasksToReminders ?? true }
+        set { tasksToReminders = newValue }
+    }
     public var checkConflicts = true
     public var appearance = "system"
     public var shortcutKey: UInt32 = 49
@@ -107,26 +114,56 @@ public struct ExtractedEvent: Codable, Equatable, Sendable {
     public var missing: [String]
     public var assumptions: [String]
     public var source: String
-    /// Relative timeframe reported by the model when the text gives no clock time.
-    /// Optional on the wire and in storage so drafts written by earlier builds still decode.
-    public var dueHint: String?
-    /// Filled in locally after a hint is resolved; shown as a review note, never sent to the model.
+    // Everything below is optional on the wire and in storage: drafts written by earlier
+    // builds keep decoding, and a provider that omits a field is not a contract failure.
+    /// Extra alarms in minutes before the start, on top of reminderMinutes.
+    public var extraReminderMinutes: [Int]?
+    /// "event" goes to the calendar, "task" can go to Reminders where it survives until it is done.
+    public var kind: String?
+    /// Relative day and part of day, used when the text gives no clock time.
+    public var dueDay: String?
+    public var dayPart: String?
+    /// Chinese lunar date as MM-DD or YYYY-MM-DD, with a leading + for a leap month.
+    public var lunarDate: String?
+    /// The resolved instant is a deadline, so the reminders are placed ahead of it.
+    public var isDeadline: Bool?
+    /// Recurrence, expressed in the few shapes EventKit can represent exactly.
+    public var repeatRule: String?
+    public var repeatDays: [Int]?
+    public var repeatUntil: String?
+    public var repeatCount: Int?
+    /// Filled in locally after a timeframe is resolved; shown as a review note, never sent to the model.
     public var timingNote: String?
     public init(title: String = "新日程", startLocal: String? = nil, endLocal: String? = nil,
                 timeZone: String = TimeZone.current.identifier, allDay: Bool = false,
                 location: String = "", notes: String = "", reminderMinutes: Int? = 15,
                 missing: [String] = [], assumptions: [String] = [], source: String = "手动创建",
-                dueHint: String? = nil, timingNote: String? = nil) {
+                extraReminderMinutes: [Int]? = nil, kind: String? = nil,
+                dueDay: String? = nil, dayPart: String? = nil, lunarDate: String? = nil, isDeadline: Bool? = nil,
+                repeatRule: String? = nil, repeatDays: [Int]? = nil, repeatUntil: String? = nil, repeatCount: Int? = nil,
+                timingNote: String? = nil) {
         self.title = title; self.startLocal = startLocal; self.endLocal = endLocal
         self.timeZone = timeZone; self.allDay = allDay; self.location = location; self.notes = notes
         self.reminderMinutes = reminderMinutes; self.missing = missing
         self.assumptions = assumptions; self.source = source
-        self.dueHint = dueHint; self.timingNote = timingNote
+        self.extraReminderMinutes = extraReminderMinutes; self.kind = kind
+        self.dueDay = dueDay; self.dayPart = dayPart; self.lunarDate = lunarDate; self.isDeadline = isDeadline
+        self.repeatRule = repeatRule; self.repeatDays = repeatDays
+        self.repeatUntil = repeatUntil; self.repeatCount = repeatCount
+        self.timingNote = timingNote
     }
 }
 
 extension ExtractedEvent {
     public var isPointReminder: Bool { !allDay && endLocal == nil }
+    /// Every alarm this event asks for, closest to the start first.
+    public var allReminderMinutes: [Int] {
+        guard let primary = reminderMinutes else { return [] }
+        return Array(Set([primary] + (extraReminderMinutes ?? []))).sorted()
+    }
+    /// A task is something to finish, not an appointment; it may belong in Reminders.
+    public var isTask: Bool { kind == "task" }
+    public var recurrence: Recurrence? { Recurrence(event: self) }
 }
 
 public struct Extraction: Codable, Sendable {
@@ -138,12 +175,18 @@ public struct Extraction: Codable, Sendable {
 public struct Draft: Identifiable, Codable, Equatable, Sendable {
     public var id = UUID()
     public var event: ExtractedEvent
+    /// The destination container: a calendar, or a Reminders list when the draft goes there.
     public var calendarID: String
     public var selected = true
     public var reviewed = false
     public var conflictAcknowledged = false
     public var conflicts: [String] = []
-    public init(event: ExtractedEvent, calendarID: String) { self.event = event; self.calendarID = calendarID }
+    /// Optional so drafts stored by earlier builds keep decoding as calendar events.
+    public var toReminders: Bool?
+    public var usesReminders: Bool { toReminders == true }
+    public init(event: ExtractedEvent, calendarID: String, toReminders: Bool? = nil) {
+        self.event = event; self.calendarID = calendarID; self.toReminders = toReminders
+    }
 }
 
 public struct CalendarChoice: Identifiable, Sendable {

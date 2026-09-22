@@ -21,16 +21,26 @@ struct DraftReviewView: View {
                                 if model.drafts.count > 1 || !draft.selected { Toggle("选择 \(draft.event.title)", isOn: $draft.selected).labelsHidden().toggleStyle(.checkbox) }
                                 VStack(alignment: .leading, spacing: 7) {
                                     Text(draft.event.title).font(.system(size: 16, weight: .semibold))
-                                    Label(displayTime(draft.event), systemImage: draft.event.startLocal == nil ? "clock.badge.questionmark" : "clock")
+                                    Label(displayTime(draft.event, toReminders: draft.usesReminders),
+                                          systemImage: draft.event.startLocal == nil ? "clock.badge.questionmark" : "clock")
                                         .font(.system(size: 13, weight: .medium))
                                         .foregroundStyle(draft.event.startLocal == nil ? Color.orange : Color.primary)
+                                    if let recurrence = draft.event.recurrence {
+                                        Label(recurrence.label, systemImage: "repeat").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.accentColor)
+                                    }
                                     HStack(spacing: 10) {
                                         if !draft.event.location.isEmpty { Label(draft.event.location, systemImage: "mappin.and.ellipse") }
-                                        if draft.event.allDay { Label("全天提醒按设置", systemImage: "bell") }
-                                        else if let reminder = draft.event.reminderMinutes { Label(reminder == 0 ? "开始时提醒" : "提前 \(reminder) 分钟", systemImage: "bell") }
-                                        else { Text("不提醒") }
+                                        Label(reminderText(draft.event), systemImage: "bell")
                                     }.font(.caption).foregroundStyle(.secondary)
-                                    Text(model.calendars.first { $0.id == draft.calendarID }?.displayName ?? "尚未选择日历").font(.caption).foregroundStyle(.secondary)
+                                    HStack(spacing: 5) {
+                                        Image(systemName: draft.usesReminders ? "checklist" : "calendar")
+                                        Text(model.destinationName(draft))
+                                        if draft.event.isTask && !model.isDemo {
+                                            Button(draft.usesReminders ? "改存到日历" : "改存到提醒事项") {
+                                                model.setDestination(!draft.usesReminders, for: draft.id)
+                                            }.buttonStyle(.link).font(.caption2)
+                                        }
+                                    }.font(.caption).foregroundStyle(.secondary)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                 Button("手动编辑") { model.editingID = draft.id; model.resizePanel?() }.buttonStyle(.borderless)
                             }
@@ -88,9 +98,26 @@ struct DraftReviewView: View {
             }.padding(14).background(AppStyle.surface)
         }
     }
-    private func displayTime(_ event: ExtractedEvent) -> String {
+    private func reminderText(_ event: ExtractedEvent) -> String {
+        if event.allDay { return "全天提醒按设置" }
+        let minutes = event.allReminderMinutes.sorted(by: >)
+        guard !minutes.isEmpty else { return "不提醒" }
+        // The earliest alarm keeps the 提前, the rest are read against it.
+        let parts = minutes.map { value -> String in
+            switch value {
+            case 0: "开始时"
+            case _ where value % 1440 == 0: "\(value / 1440) 天"
+            case _ where value % 60 == 0: "\(value / 60) 小时"
+            default: "\(value) 分钟"
+            }
+        }
+        return (minutes[0] == 0 ? "" : "提前 ") + parts.joined(separator: "、") + "提醒"
+    }
+    private func displayTime(_ event: ExtractedEvent, toReminders: Bool = false) -> String {
         guard let start = event.startLocal else { return "需要补充开始时间" }
-        if event.isPointReminder { return "\(start.prefix(10))  \(start.dropFirst(11).prefix(5)) · 时间点提醒" }
+        if event.isPointReminder {
+            return "\(start.prefix(10))  \(start.dropFirst(11).prefix(5)) · " + (toReminders ? "待办到期" : "时间点提醒")
+        }
         guard let end = event.endLocal else { return "需要补充结束日期" }
         if event.allDay {
             if let interval = try? Temporal.interval(event) {
@@ -109,14 +136,19 @@ struct DraftReviewView: View {
 struct QuickTimeRow: View {
     @ObservedObject var model: AppModel
     let draftID: UUID
-    private let hints: [DueHint] = [.asap, .tonight, .tomorrow, .thisWeek]
+    var title = "没有具体时间，先选一个提醒时机："
+    private let windows: [DueWindow] = [
+        .init(day: .asap), .init(day: .today, part: .evening),
+        .init(day: .tomorrow, part: .morning), .init(day: .tomorrow, part: .afternoon),
+        .init(day: .thisWeek)
+    ]
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("没有具体时间，先选一个提醒时机：").font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 7) {
-                ForEach(hints, id: \.self) { hint in
-                    Button(hint.label) { model.applyQuickTime(hint, to: draftID) }
-                        .buttonStyle(SuggestionStyle()).help("按“\(hint.label)”在本机换算成一个提醒时刻")
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach(windows, id: \.label) { window in
+                    Button(window.label) { model.applyQuickTime(window, to: draftID) }
+                        .buttonStyle(SuggestionStyle()).help("按“\(window.label)”在本机换算成一个提醒时刻")
                 }
                 Spacer(minLength: 0)
             }
@@ -155,6 +187,9 @@ struct DraftEditor: View {
     @ViewState private var end: Date
     @ViewState private var hasStart: Bool
     @ViewState private var hasEnd: Bool
+    @ViewState private var repeatRule: String
+    @ViewState private var hasRepeatEnd: Bool
+    @ViewState private var repeatEnd: Date
     @ViewState private var message = ""
     let calendars: [CalendarChoice]
     let save: (Draft) -> Void
@@ -167,6 +202,11 @@ struct DraftEditor: View {
         _end = State(initialValue: parsedEnd ?? (parsedStart ?? Date()).addingTimeInterval(3600))
         _hasStart = State(initialValue: parsedStart != nil)
         _hasEnd = State(initialValue: draft.event.endLocal != nil)
+        let recurrence = draft.event.recurrence
+        _repeatRule = State(initialValue: recurrence?.rule.rawValue ?? "")
+        _hasRepeatEnd = State(initialValue: recurrence?.until != nil)
+        let until = recurrence?.until.flatMap { try? Temporal.parse($0, timeZone: draft.event.timeZone, allDay: true) }
+        _repeatEnd = State(initialValue: until ?? (parsedStart ?? Date()).addingTimeInterval(90 * 86400))
         self.calendars = calendars; self.save = save; self.cancel = cancel
     }
     var body: some View {
@@ -191,6 +231,20 @@ struct DraftEditor: View {
             if value.event.allDay || hasEnd {
                 DatePicker(value.event.allDay ? "结束日期（不包含）" : "结束", selection: $end, displayedComponents: value.event.allDay ? [.date] : [.date, .hourAndMinute])
             }
+            HStack {
+                Picker("重复", selection: $repeatRule) {
+                    Text("不重复").tag("")
+                    ForEach(Recurrence.Rule.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
+                }
+                if !repeatRule.isEmpty { Toggle("设置结束日期", isOn: $hasRepeatEnd).font(.caption) }
+            }
+            if !repeatRule.isEmpty {
+                if hasRepeatEnd { DatePicker("重复到", selection: $repeatEnd, displayedComponents: [.date]) }
+                if let days = value.event.repeatDays, !days.isEmpty, ["weekly", "biweekly"].contains(repeatRule) {
+                    Text("按原文保留的星期：" + Recurrence(rule: .weekly, days: days).label.replacingOccurrences(of: "每周", with: "").replacingOccurrences(of: " · 不设结束", with: ""))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             TextField("时区，如 Asia/Shanghai", text: $value.event.timeZone)
             TextField("地点（选填）", text: $value.event.location)
             Picker("目标日历", selection: $value.calendarID) { Text("请选择").tag(""); ForEach(calendars) { Text($0.displayName).tag($0.id) } }
@@ -210,6 +264,11 @@ struct DraftEditor: View {
         var next = value
         next.event.startLocal = hasStart ? Temporal.format(start, timeZone: value.event.timeZone, allDay: value.event.allDay) : nil
         next.event.endLocal = value.event.allDay || hasEnd ? Temporal.format(end, timeZone: value.event.timeZone, allDay: value.event.allDay) : nil
+        next.event.repeatRule = repeatRule.isEmpty ? nil : repeatRule
+        next.event.repeatCount = nil
+        next.event.repeatUntil = repeatRule.isEmpty || !hasRepeatEnd ? nil
+            : Temporal.format(repeatEnd, timeZone: value.event.timeZone, allDay: true)
+        if repeatRule.isEmpty { next.event.repeatDays = nil }
         next.reviewed = true; next.event.missing = []
         next.conflicts = []; next.conflictAcknowledged = false
         let errors = DraftValidator.errors(next, requireCalendar: false)

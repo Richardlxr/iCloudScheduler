@@ -132,6 +132,32 @@ enum NativeChecks {
             let handled = input.readSelection(from: pasteboard)
             return handled && dropped.isEmpty && input.string == "明天下午三点开会"
         }
+        check("a weekly timetable becomes the recurrence rule EventKit stores") {
+            let recurrence = Recurrence(rule: .weekly, days: [3, 5], until: "2027-01-15")
+            let rule = try CalendarRepository.rule(recurrence, timeZone: "Asia/Shanghai")
+            let days = (rule.daysOfTheWeek ?? []).map { $0.dayOfTheWeek.rawValue }.sorted()
+            let end = try Temporal.parse("2027-01-15", timeZone: "Asia/Shanghai", allDay: true)
+            return rule.frequency == .weekly && rule.interval == 1 && days == [4, 6]
+                && (rule.recurrenceEnd?.endDate.map { $0 > end && $0 < end.addingTimeInterval(86400) } ?? false)
+        }
+        check("working days and fortnightly repeats keep their shape") {
+            let weekdays = try CalendarRepository.rule(Recurrence(rule: .weekdays), timeZone: "Asia/Shanghai")
+            let fortnight = try CalendarRepository.rule(Recurrence(rule: .biweekly, days: [1], count: 8), timeZone: "Asia/Shanghai")
+            return (weekdays.daysOfTheWeek ?? []).map { $0.dayOfTheWeek.rawValue }.sorted() == [2, 3, 4, 5, 6]
+                && weekdays.interval == 1 && fortnight.interval == 2
+                && fortnight.recurrenceEnd?.occurrenceCount == 8
+                && (fortnight.daysOfTheWeek ?? []).map { $0.dayOfTheWeek.rawValue } == [2]
+        }
+        check("monthly and yearly repeats carry no weekday list") {
+            let monthly = try CalendarRepository.rule(Recurrence(rule: .monthly), timeZone: "Asia/Shanghai")
+            let yearly = try CalendarRepository.rule(Recurrence(rule: .yearly, count: 5), timeZone: "Asia/Shanghai")
+            return monthly.frequency == .monthly && monthly.daysOfTheWeek == nil
+                && yearly.frequency == .yearly && yearly.recurrenceEnd?.occurrenceCount == 5
+        }
+        check("a repeat that cannot be dated is refused before it reaches the calendar") {
+            do { _ = try CalendarRepository.rule(Recurrence(rule: .weekly, until: "下学期"), timeZone: "Asia/Shanghai"); return false }
+            catch { return true }
+        }
         var jpeg = Data()
         check("native image encoding and normalization") {
             jpeg = try AttachmentProcessor.probeImage(code: "A42F19")

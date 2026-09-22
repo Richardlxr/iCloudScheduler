@@ -4,17 +4,23 @@ import SchedulerCore
 @MainActor
 final class FixtureCalendar: CalendarAccess {
     var hasAccess = true
+    var hasReminderAccess = true
     var accessRequests = 0
+    var reminderAccessRequests = 0
     var saveCount = 0
+    var reminderSaveCount = 0
     var outcome = "saved"
     var conflictTitles: [String] = []
     var reminder: AllDayReminder?
     func requestAccess() async throws { accessRequests += 1; hasAccess = true }
+    func requestReminderAccess() async throws { reminderAccessRequests += 1; hasReminderAccess = true }
     func calendars() -> [CalendarChoice] { [.init(id: "fixture-calendar", title: "测试日历", source: "本地测试")] }
+    func reminderLists() -> [CalendarChoice] { hasReminderAccess ? [.init(id: "fixture-list", title: "测试清单", source: "本地测试")] : [] }
     func refresh() {}
     func conflicts(for draft: Draft) throws -> [String] { conflictTitles }
     func save(_ receipt: OperationReceipt, allDayReminder: AllDayReminder) throws -> OperationReceipt {
         saveCount += 1; reminder = allDayReminder
+        if receipt.draft.usesReminders { reminderSaveCount += 1 }
         if outcome == "throw" { throw AppError("Synthetic calendar failure") }
         var result = receipt; result.status = outcome == "savedWarning" ? "saved" : outcome; result.message = "Synthetic \(outcome)"
         if outcome == "savedWarning" { result.warning = "Synthetic alarm mismatch" }
@@ -269,7 +275,7 @@ enum WorkflowChecks {
                 // Mirrors LLMClient.extract, which resolves the timeframe against the same reference clock.
                 return TimingResolver.apply(to: Extraction(events: [.init(title: "办理团组织关系转入", startLocal: nil, endLocal: nil,
                                                                          timeZone: zone, reminderMinutes: 0, missing: ["具体时间"],
-                                                                         source: "请尽快办理", dueHint: "asap")]),
+                                                                         source: "请尽快办理", kind: "task", dueDay: "asap")]),
                                             now: now, fallbackTimeZone: zone)
             }, integrateSystem: false)
             hintModel.preferences.calendarID = "fixture-calendar"
@@ -294,7 +300,7 @@ enum WorkflowChecks {
         quickModel.preferences.checkConflicts = false
         let undated = Draft(event: .init(title: "交材料", startLocal: nil, timeZone: "Asia/Shanghai", reminderMinutes: nil, missing: ["具体时间"]), calendarID: "fixture-calendar")
         quickModel.drafts = [undated]; quickModel.stage = .review
-        quickModel.applyQuickTime(.tomorrow, to: undated.id)
+        quickModel.applyQuickTime(DueWindow(day: .tomorrow), to: undated.id)
         check("one tap fills a missing time locally and leaves the draft addable",
               quickModel.drafts[0].event.startLocal != nil && quickModel.drafts[0].event.missing.isEmpty
               && quickModel.drafts[0].event.isPointReminder && quickModel.canWrite && !quickModel.drafts[0].reviewed)
@@ -302,7 +308,7 @@ enum WorkflowChecks {
               DraftValidator.reviewNotes(quickModel.drafts[0]).contains { $0.contains("明天") })
         let filled = quickModel.drafts[0].event
         quickModel.isDemo = true
-        quickModel.applyQuickTime(.asap, to: undated.id)
+        quickModel.applyQuickTime(DueWindow(day: .asap), to: undated.id)
         check("the interface example cannot be edited by the timing shortcuts", quickModel.drafts[0].event == filled)
         quickModel.isDemo = false
         let attachmentModel = AppModel(directory: root.appendingPathComponent("visionGate"), calendar: FixtureCalendar(),
@@ -323,6 +329,86 @@ enum WorkflowChecks {
         attachmentModel.analyze()
         await settle { !attachmentModel.isGenerating }
         check("a rasterized PDF still requires a verified vision model", gateAlerts == ["无法开始生成"])
+        // Tasks belong in Reminders once the user has authorized a list, and nowhere else before that.
+        func taskModel(_ name: String, authorized: Bool, list: String?, enabled: Bool = true) -> (AppModel, FixtureCalendar) {
+            let calendar = FixtureCalendar(); calendar.hasReminderAccess = authorized
+            let model = AppModel(directory: root.appendingPathComponent(name), calendar: calendar,
+                                 readKey: { _ in "fixture" }, extractor: { _, _, _, now, zone, _ in
+                TimingResolver.apply(to: Extraction(events: [.init(title: "办理团组织关系转入", startLocal: nil, endLocal: nil,
+                                                                  timeZone: zone, reminderMinutes: 0, source: "请尽快办理",
+                                                                  kind: "task", dueDay: "asap")]),
+                                     now: now, fallbackTimeZone: zone)
+            }, integrateSystem: false)
+            model.preferences.calendarID = "fixture-calendar"
+            model.preferences.sendTasksToReminders = enabled
+            model.preferences.reminderListID = list
+            model.refreshCalendars()
+            model.text = "还没有办理团组织关系转入，请尽快办理"
+            return (model, calendar)
+        }
+        let (taskReady, taskCalendar) = taskModel("taskReminders", authorized: true, list: "fixture-list")
+        taskReady.preferences.runInBackground = true; taskReady.preferences.confirmBeforeAdding = false
+        var taskHides = 0; taskReady.hidePanel = { taskHides += 1 }; taskReady.panelIsVisible = { taskHides == 0 }
+        taskReady.analyze()
+        await settle { !taskReady.isGenerating && taskCalendar.saveCount > 0 }
+        await Task.yield()
+        check("a task goes to the chosen Reminders list once it is authorized",
+              taskCalendar.reminderSaveCount == 1 && taskCalendar.saveCount == 1
+              && taskReady.receipts.first?.draft.usesReminders == true
+              && taskReady.receipts.first?.draft.calendarID == "fixture-list")
+        let (taskUnauthorized, unauthorizedCalendar) = taskModel("taskCalendarFallback", authorized: false, list: nil)
+        taskUnauthorized.preferences.runInBackground = true; taskUnauthorized.preferences.confirmBeforeAdding = false
+        var fallbackHides = 0; taskUnauthorized.hidePanel = { fallbackHides += 1 }; taskUnauthorized.panelIsVisible = { fallbackHides == 0 }
+        taskUnauthorized.analyze()
+        await settle { !taskUnauthorized.isGenerating && unauthorizedCalendar.saveCount > 0 }
+        await Task.yield()
+        check("without Reminders access the task still reaches the calendar instead of being lost",
+              unauthorizedCalendar.saveCount == 1 && unauthorizedCalendar.reminderSaveCount == 0
+              && taskUnauthorized.receipts.first?.draft.usesReminders == false)
+        let (switchModel, switchCalendar) = taskModel("taskSwitch", authorized: true, list: "fixture-list")
+        switchModel.preferences.confirmBeforeAdding = true
+        switchModel.analyze()
+        await settle { switchModel.stage == .review && !switchModel.isGenerating }
+        let switched = switchModel.drafts[0].id
+        check("a task draft names its Reminders destination", switchModel.destinationName(switchModel.drafts[0]).contains("测试清单"))
+        switchModel.setDestination(false, for: switched)
+        check("one click moves a task back to the calendar",
+              switchModel.drafts[0].usesReminders == false && switchModel.drafts[0].calendarID == "fixture-calendar"
+              && switchModel.destinationName(switchModel.drafts[0]).contains("测试日历"))
+        switchModel.setDestination(true, for: switched)
+        switchModel.confirmAndWriteSelected()
+        await settle { switchCalendar.saveCount > 0 }
+        check("the destination chosen in review is the one written", switchCalendar.reminderSaveCount == 1)
+        let (blockedModel, blockedCalendar) = taskModel("taskNeedsPermission", authorized: false, list: "fixture-list")
+        blockedModel.remindersAuthorized = true // A stale authorization must not be trusted at write time.
+        blockedModel.preferences.confirmBeforeAdding = true
+        blockedModel.analyze()
+        await settle { blockedModel.stage == .review && !blockedModel.isGenerating }
+        check("a Reminders draft asks for its own permission instead of the calendar's",
+              blockedModel.reviewActionTitle == "允许提醒事项访问")
+        blockedModel.confirmAndWriteSelected()
+        await settle { blockedCalendar.reminderAccessRequests == 1 }
+        check("confirming without Reminders access requests it without writing",
+              blockedCalendar.reminderAccessRequests == 1 && blockedCalendar.saveCount == 0)
+
+        // Repeats and deadlines reach the writer as one series with the alarms they promised.
+        let seriesCalendar = FixtureCalendar()
+        let seriesModel = AppModel(directory: root.appendingPathComponent("series"), calendar: seriesCalendar, integrateSystem: false)
+        seriesModel.preferences.calendarID = "fixture-calendar"; seriesModel.preferences.checkConflicts = false
+        let lesson = Draft(event: .init(title: "高等数学", startLocal: "2035-09-17T08:00:00", endLocal: "2035-09-17T09:40:00",
+                                        timeZone: "Asia/Shanghai", reminderMinutes: 15,
+                                        repeatRule: "weekly", repeatDays: [3, 5], repeatUntil: "2036-01-15"),
+                           calendarID: "fixture-calendar")
+        seriesModel.drafts = [lesson]; seriesModel.stage = .review
+        check("a timetable is addable as one repeating draft", seriesModel.canWrite && lesson.event.recurrence?.days == [3, 5])
+        seriesModel.confirmAndWriteSelected()
+        await settle { seriesCalendar.saveCount > 0 }
+        check("the repeating draft is written once and recorded with its rule",
+              seriesCalendar.saveCount == 1 && seriesModel.receipts.first?.draft.event.recurrence?.rule == .weekly)
+        var broken = lesson; broken.id = UUID(); broken.event.repeatUntil = "2020-01-01"
+        seriesModel.drafts = [broken]; seriesModel.stage = .review
+        check("a repeat that ends before it starts blocks instead of writing a single event",
+              !DraftValidator.errorsAfterReview(broken).isEmpty && !seriesModel.canWrite)
         print("\n\(passed) workflow checks passed, \(failed) failed. Injected model and calendar only; no network, Keychain or real calendar access.")
         return failed == 0 ? 0 : 1
     }

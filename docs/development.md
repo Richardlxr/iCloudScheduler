@@ -111,3 +111,12 @@ Key、地址、模型或超时修改都会使旧验证失效。保存 Key 前，
 - 换算在 `SchedulerCore/DueHint.swift`，以提交时刻和事件时区为准，结果必须晚于当前时间并通过写入前的同一解析器；说明写入 `timingNote`，作为产品默认规则展示，不当作模型假设，因此不阻塞添加。与时间无关的 `missing` 条目继续阻塞。
 - 缺时间的草稿在卡片上提供“尽快 / 今晚 / 明天 / 本周内”，使用同一套换算，不调用模型。
 - 验收记录见 [输入与时限验收记录](research/capture-and-timing-validation.md)。
+
+## 时段、截止、农历、重复与提醒事项（2026-09-22）
+
+- 产品前提：用户写下的内容就是他认为够用的信息。能按确定规则算出来的一律算出来并写明依据，只有原文矛盾、截图不可辨认、截图相对日期缺来源时才阻塞。
+- 模型只做分类，不做日期运算。契约新增可选字段 `kind`、`dueDay`、`dayPart`、`lunarDate`、`isDeadline`、`extraReminderMinutes`、`repeatRule`、`repeatDays`、`repeatUntil`、`repeatCount`，全部可省略；词表之外的取值在契约边界丢弃，草稿退回需要补充时间。
+- 换算在 `SchedulerCore/Timing.swift`：日（含星期、周末、本周、下周、月底）× 时段（早上/上午/中午/下午/晚上）组合成一个时刻，必须晚于当前时间并通过写入前的同一解析器。农历用 `Calendar(identifier: .chinese)` 逐日匹配，闰月按 `isLeapMonth` 区分；给了年份就从那一年的 1 月 1 日开始找。
+- 重复只支持 `EKRecurrenceRule` 能精确表达的六种，见 `SchedulerCore/Recurrence.swift`；新建重复日程用 `.futureEvents` 保存，撤销同样用 `.futureEvents`，并保留指纹校验。冲突检查只看第一次发生。
+- 待办（`kind="task"`）在授权并选定清单后写入 `EKReminder`，需要 `NSRemindersFullAccessUsageDescription`。未授权或未选清单时退回日历，绝不丢弃。提醒事项的核对只按标识符查找，找不到即标记不确定。
+- 验收记录见 [提醒场景验收记录](research/reminder-scenarios-validation.md)。

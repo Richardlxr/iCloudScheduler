@@ -25,6 +25,8 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = ""
     @Published var calendars: [CalendarChoice] = []
     @Published var calendarAuthorized = false
+    @Published var reminderLists: [CalendarChoice] = []
+    @Published var remindersAuthorized = false
     @Published var settingsPage = SettingsPage.models
     @Published var selectedPreset = "kimi"
     @Published var configDraft = ProviderConfig(preset: ProviderPreset.all[1])
@@ -121,7 +123,8 @@ final class AppModel: ObservableObject {
     }
     var reviewActionTitle: String {
         if writing { return "正在添加…" }
-        if !calendar.hasAccess { return "允许日历访问" }
+        if selectedDrafts.contains(where: { !$0.usesReminders }), !calendar.hasAccess { return "允许日历访问" }
+        if selectedDrafts.contains(where: \.usesReminders), !calendar.hasReminderAccess { return "允许提醒事项访问" }
         if editingID != nil { return "请先完成编辑" }
         if selectedDrafts.contains(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) { return "补全后添加" }
         if reviewNeedsAcknowledgment { return selectedDrafts.count == 1 ? "仍然添加" : "仍然添加 \(selectedDrafts.count) 项" }
@@ -129,7 +132,10 @@ final class AppModel: ObservableObject {
     }
     func confirmAndWriteSelected() {
         guard !writing, !isGenerating, editingID == nil, !selectedDrafts.isEmpty else { return }
-        guard calendar.hasAccess else { authorizeCalendar(); return }
+        if selectedDrafts.contains(where: { !$0.usesReminders }) {
+            guard calendar.hasAccess else { authorizeCalendar(); return }
+        }
+        if selectedDrafts.contains(where: \.usesReminders), !calendar.hasReminderAccess { authorizeReminders(); return }
         if let incomplete = selectedDrafts.first(where: { !DraftValidator.errorsAfterReview($0).isEmpty }) {
             editingID = incomplete.id; resizePanel?()
             return
@@ -270,7 +276,7 @@ final class AppModel: ObservableObject {
                 statusMessage = "\(config.name) 正在理解安排…"
                 let result = try await extract(input, config, key, now, zone, reminder)
                 try Task.checkCancellation(); guard revision == token else { return }
-                drafts = result.events.map { Draft(event: $0, calendarID: targetCalendar) }
+                drafts = result.events.map { makeDraft($0, calendarID: targetCalendar) }
                 questions = result.questions
                 isGenerating = false
                 refreshConflicts(); persistDraft(); setStage(.review)
@@ -345,7 +351,7 @@ final class AppModel: ObservableObject {
                     drafts[index] = updated
                 } else {
                     guard !result.events.isEmpty else { throw AppError(result.questions.first ?? "还无法确定安排，请再补充日期和时间。") }
-                    drafts = result.events.map { Draft(event: $0, calendarID: target) }; questions = []
+                    drafts = result.events.map { makeDraft($0, calendarID: target) }; questions = []
                 }
                 refreshConflicts(notify: false); persistDraft(); resizePanel?()
                 activityLabel = "补全完成，请确认后添加"
@@ -368,20 +374,54 @@ final class AppModel: ObservableObject {
         resizePanel?()
     }
     /// Applies a relative timeframe locally: no model call, same resolver the extraction path uses.
-    func applyQuickTime(_ hint: DueHint, to id: UUID) {
+    func applyQuickTime(_ window: DueWindow, to id: UUID) {
         guard !isDemo, !writing, !isGenerating, editingID == nil,
               let index = drafts.firstIndex(where: { $0.id == id }) else { return }
         var event = drafts[index].event
-        event.allDay = false; event.startLocal = nil; event.endLocal = nil
+        event.allDay = false; event.startLocal = nil; event.endLocal = nil; event.timingNote = nil
         event.timeZone = TimeZone(identifier: event.timeZone) == nil ? preferences.timeZone : event.timeZone
-        event.dueHint = hint.rawValue
+        event.dueDay = window.day?.rawValue; event.dayPart = window.part?.rawValue
         let resolved = TimingResolver.apply(to: event, now: Date(), fallbackTimeZone: preferences.timeZone)
-        guard resolved.startLocal != nil else { errorMessage = "无法换算“\(hint.label)”，请手动填写时间。"; return }
+        guard resolved.startLocal != nil else { errorMessage = "无法换算“\(window.label)”，请手动填写时间。"; return }
         drafts[index].event = resolved
         drafts[index].reviewed = false; drafts[index].conflictAcknowledged = false
         errorMessage = nil
         refreshConflicts(notify: false); persistDraft(); resizePanel?()
-        activityLabel = "已按“\(hint.label)”设定提醒，请确认"
+        activityLabel = "已按“\(window.label)”设定提醒，请确认"
+    }
+    /// Tasks go to Reminders only once the user has authorized a list; otherwise they stay in the calendar.
+    var remindersDestinationReady: Bool {
+        preferences.sendTasksToReminders && remindersAuthorized && !(preferences.reminderListID ?? "").isEmpty
+    }
+    private func makeDraft(_ event: ExtractedEvent, calendarID: String) -> Draft {
+        guard event.isTask, remindersDestinationReady, let list = preferences.reminderListID else {
+            return Draft(event: event, calendarID: calendarID)
+        }
+        return Draft(event: event, calendarID: list, toReminders: true)
+    }
+    func setDestination(_ toReminders: Bool, for id: UUID) {
+        guard !isDemo, !writing, !isGenerating, let index = drafts.firstIndex(where: { $0.id == id }) else { return }
+        if toReminders {
+            guard remindersDestinationReady, let list = preferences.reminderListID else {
+                errorMessage = "请先在“日历与提醒”授权提醒事项并选择清单。"; return
+            }
+            drafts[index].toReminders = true; drafts[index].calendarID = list
+        } else {
+            drafts[index].toReminders = false; drafts[index].calendarID = preferences.calendarID
+        }
+        drafts[index].conflicts = []; drafts[index].conflictAcknowledged = false
+        refreshConflicts(notify: false); persistDraft(); resizePanel?()
+    }
+    func authorizeReminders() {
+        Task {
+            do {
+                try await calendar.requestReminderAccess()
+                refreshCalendars()
+                if (preferences.reminderListID ?? "").isEmpty, let first = reminderLists.first {
+                    preferences.reminderListID = first.id; persistPreferences()
+                }
+            } catch { reportFailure("无法访问提醒事项", error.localizedDescription) }
+        }
     }
     func addPastedImage(_ data: Data) {
         guard attachments.count < 5, data.count <= 20 * 1024 * 1024 else { errorMessage = "图片超过 20 MB 或附件超过 5 个。"; return }
@@ -395,6 +435,14 @@ final class AppModel: ObservableObject {
     func refreshCalendars() {
         calendarAuthorized = calendar.hasAccess
         calendars = calendar.calendars()
+        remindersAuthorized = calendar.hasReminderAccess
+        reminderLists = calendar.reminderLists()
+    }
+    /// The container a draft will be written to, named the way the user picked it.
+    func destinationName(_ draft: Draft) -> String {
+        let source = draft.usesReminders ? reminderLists : calendars
+        return source.first { $0.id == draft.calendarID }?.displayName
+            ?? (draft.usesReminders ? "尚未选择提醒事项清单" : "尚未选择日历")
     }
     func authorizeCalendar() {
         Task {
@@ -420,7 +468,7 @@ final class AppModel: ObservableObject {
     }
     func addManual() {
         isDemo = false; questions = []
-        drafts.append(Draft(event: .init(timeZone: preferences.timeZone, reminderMinutes: preferences.reminderMinutes < 0 ? nil : preferences.reminderMinutes), calendarID: preferences.calendarID))
+        drafts.append(Draft(event: .init(timeZone: preferences.timeZone, reminderMinutes: preferences.reminderMinutes < 0 ? nil : preferences.reminderMinutes), calendarID: preferences.calendarID, toReminders: false))
         editingID = drafts.last?.id; setStage(.review)
     }
     func showExample() {

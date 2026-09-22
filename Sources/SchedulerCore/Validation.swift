@@ -85,10 +85,14 @@ public enum DraftValidator {
         notes += draft.event.assumptions
         if let interval = try? Temporal.interval(draft.event) {
             if interval.start < now { notes.append("开始时间已过去。") }
-            else if !draft.event.allDay, let minutes = draft.event.reminderMinutes, (0...10080).contains(minutes),
+            else if !draft.event.allDay, let minutes = lastAlarm(draft.event),
                     interval.start.addingTimeInterval(Double(-minutes * 60)) < now { notes.append("提醒时间已过去，可能无法按原计划提醒。") }
         }
         return notes
+    }
+    /// The alarm closest to the start is the last chance to be told; earlier ones may already be gone.
+    private static func lastAlarm(_ event: ExtractedEvent) -> Int? {
+        event.allReminderMinutes.filter { (0...10080).contains($0) }.min()
     }
     public static func errors(_ draft: Draft, now: Date = Date(), requireCalendar: Bool = true) -> [String] {
         var errors: [String] = []
@@ -97,13 +101,17 @@ public enum DraftValidator {
         if event.location.count > 1000 || event.notes.count > 10000 { errors.append("地点或备注太长。") }
         if requireCalendar && draft.calendarID.isEmpty { errors.append("请选择目标日历。") }
         if !event.missing.isEmpty { errors.append("待补充：" + event.missing.joined(separator: "、")) }
-        if let minutes = event.reminderMinutes, !(0...10080).contains(minutes) { errors.append("提醒应在开始前 0–10080 分钟之间。") }
+        if event.allReminderMinutes.contains(where: { !(0...10080).contains($0) }) { errors.append("提醒应在开始前 0–10080 分钟之间。") }
+        if (event.extraReminderMinutes ?? []).count > 4 { errors.append("一条日程最多设置 5 个提醒。") }
         do {
             let interval = try Temporal.interval(event)
             if interval.start < now && !draft.reviewed { errors.append("开始时间已过去，请核对后确认。") }
-            if !event.allDay, let minutes = event.reminderMinutes, (0...10080).contains(minutes),
+            if !event.allDay, let minutes = lastAlarm(event),
                interval.start >= now, interval.start.addingTimeInterval(Double(-minutes * 60)) < now, !draft.reviewed {
                 errors.append("提醒时间已过去，请修改提醒或核对后确认。")
+            }
+            if let recurrence = event.recurrence {
+                errors += recurrence.errors(start: event.startLocal, timeZone: event.timeZone)
             }
         } catch { errors.append(error.localizedDescription) }
         if !event.assumptions.isEmpty && !draft.reviewed { errors.append("请核对模型采用的假设。") }
@@ -121,8 +129,9 @@ public enum ExtractionDecoder {
               Set(root.keys) == ["events", "questions"], let events = root["events"] as? [[String: Any]],
               events.count <= 20 else { throw AppError("模型没有返回完整的日程 JSON，或一次超过 20 项。请重试或缩小范围。") }
         let required: Set<String> = ["title", "startLocal", "endLocal", "timeZone", "allDay", "location", "notes", "reminderMinutes", "missing", "assumptions", "source"]
-        // dueHint is the only tolerated addition: older profiles may omit it, and nothing else may be injected.
-        let optional: Set<String> = ["dueHint"]
+        // Timing, repetition and routing are additive: a profile may omit them, and nothing else may be injected.
+        let optional: Set<String> = ["extraReminderMinutes", "kind", "dueDay", "dayPart", "lunarDate",
+                                     "isDeadline", "repeatRule", "repeatDays", "repeatUntil", "repeatCount"]
         for event in events {
             let keys = Set(event.keys)
             guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else {
@@ -130,10 +139,18 @@ public enum ExtractionDecoder {
             }
         }
         var extraction = try JSONDecoder().decode(Extraction.self, from: data)
-        // An unknown timeframe word is dropped rather than trusted: the draft keeps asking for a real time.
+        // Unknown vocabulary is dropped rather than trusted: nothing outside the documented
+        // sets can reach the resolver, and the resolution note is always written locally.
         for index in extraction.events.indices {
-            extraction.events[index].timingNote = nil
-            if DueHint.parse(extraction.events[index].dueHint) == nil { extraction.events[index].dueHint = nil }
+            var event = extraction.events[index]
+            event.timingNote = nil
+            if event.dueDay.map({ DueDay(rawValue: $0) == nil }) == true { event.dueDay = nil }
+            if event.dayPart.map({ DayPart(rawValue: $0) == nil }) == true { event.dayPart = nil }
+            if event.repeatRule.map({ Recurrence.Rule(rawValue: $0) == nil }) == true { event.repeatRule = nil }
+            if event.kind.map({ !["event", "task"].contains($0) }) == true { event.kind = nil }
+            if LunarDate(event.lunarDate) == nil { event.lunarDate = nil }
+            event.repeatDays = event.repeatDays.map { days in Array(Set(days.filter { (1...7).contains($0) })).sorted() }
+            extraction.events[index] = event
         }
         guard (extraction.events.isEmpty || extraction.questions.isEmpty), extraction.questions.count <= 20, extraction.questions.allSatisfy({ $0.count <= 1000 }),
               extraction.events.allSatisfy({ $0.title.count <= 200 && $0.source.count <= 4000 && $0.notes.count <= 10000 && $0.missing.count <= 20 && $0.assumptions.count <= 20 && ($0.missing + $0.assumptions).allSatisfy({ $0.count <= 1000 }) }) else {

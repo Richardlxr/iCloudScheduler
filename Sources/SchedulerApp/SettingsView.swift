@@ -168,6 +168,32 @@ struct CalendarSettingsView: View {
                     Toggle("添加前检查时间冲突", isOn: $model.preferences.checkConflicts)
                 }.padding(8)
             }
+            GroupBox("待办与提醒事项") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle("把待办写入提醒事项", isOn: $model.preferences.sendTasksToReminders)
+                        .onChange(of: model.preferences.sendTasksToReminders) { _, _ in model.persistPreferences() }
+                    Text("办理、缴费、交材料这类待办完成前不该消失。写入提醒事项后可以勾掉、顺延；会议、上课等约定仍然写入日历。").font(.caption2).foregroundStyle(.secondary)
+                    if model.preferences.sendTasksToReminders {
+                        HStack {
+                            Image(systemName: model.remindersAuthorized ? "checkmark.circle.fill" : "checklist.unchecked")
+                                .foregroundStyle(model.remindersAuthorized ? .green : .orange)
+                            Text(model.remindersAuthorized ? "已允许提醒事项访问" : "尚未允许提醒事项访问")
+                            Spacer()
+                            Button(model.remindersAuthorized ? "刷新" : "允许访问") {
+                                if model.remindersAuthorized { model.refreshCalendars() } else { model.authorizeReminders() }
+                            }
+                        }
+                        Picker("提醒事项清单", selection: Binding(get: { model.preferences.reminderListID ?? "" },
+                                                            set: { model.preferences.reminderListID = $0 })) {
+                            Text("请选择清单").tag("")
+                            ForEach(model.reminderLists) { Text($0.displayName).tag($0.id) }
+                        }.disabled(!model.remindersAuthorized)
+                        if !model.remindersDestinationReady {
+                            Text("未授权或未选择清单时，待办继续写入日历，不会丢失。").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }.padding(8)
+            }
             GroupBox("默认提醒") {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack { Text("定时日程提前"); TextField("分钟", value: $model.preferences.reminderMinutes, format: .number).frame(width: 65); Text("分钟").foregroundStyle(.secondary) }

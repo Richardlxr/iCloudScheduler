@@ -9,8 +9,8 @@
 <key>CFBundleLocalizations</key><array><string>zh_CN</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
-<key>CFBundleVersion</key><string>7</string>
+<key>CFBundleShortVersionString</key><string>0.5.0</string>
+<key>CFBundleVersion</key><string>8</string>
 <key>SUFeedURL</key><string>https://github.com/Richardlxr/iCloudScheduler/releases/latest/download/appcast.xml</string>
 <key>SUPublicEDKey</key><string>myl1tYDG83ShgzXxA1VrO95gpJtjNHl0qiOdUpUWAjY=</string>
 <key>SUEnableAutomaticChecks</key><true/>
@@ -24,4 +24,5 @@
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSCalendarsFullAccessUsageDescription</key><string>读取日历以检查时间冲突，按你的确认设置添加日程，并核对结果或撤销本应用创建的事件。</string>
+<key>NSRemindersFullAccessUsageDescription</key><string>把“办理、提交、缴费”这类待办写入你选择的提醒事项清单，并核对结果或撤销本应用创建的待办。</string>
 </dict></plist>
